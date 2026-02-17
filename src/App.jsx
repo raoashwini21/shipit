@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Send, Settings, ChevronLeft, ChevronRight, Upload, Link, FileText, Image, Eye, Rocket, Check, AlertTriangle, X, Type, Globe, CheckCircle2, FileUp, Trash2, FolderOpen } from 'lucide-react';
+import { Send, Settings, ChevronLeft, ChevronRight, Upload, Link, Link2, FileText, Image, Eye, Rocket, Check, AlertTriangle, X, Type, Globe, CheckCircle2, FileUp, Trash2, FolderOpen, Bold, Italic, Heading1, Heading2, Heading3, MessageSquareText } from 'lucide-react';
 import mammoth from 'mammoth';
 
 /* ───────────────────────── constants ───────────────────────── */
@@ -17,6 +17,7 @@ const FONT_MONO = "'JetBrains Mono', monospace";
 const STEPS = [
   { label: 'Content', icon: FileText },
   { label: 'Images', icon: Image },
+  { label: 'Alt Text', icon: MessageSquareText },
   { label: 'Meta', icon: Type },
   { label: 'Preview', icon: Eye },
   { label: 'Publish', icon: Rocket },
@@ -553,6 +554,38 @@ const s = {
     color: '#fff',
     padding: 0,
   },
+  toolbar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    padding: '8px 12px',
+    background: SURFACE2,
+    border: `1px solid ${BORDER}`,
+    borderBottom: 'none',
+    borderRadius: '8px 8px 0 0',
+    flexWrap: 'wrap',
+  },
+  toolbarBtn: (active) => ({
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 34,
+    height: 34,
+    borderRadius: 6,
+    border: 'none',
+    background: active ? ACCENT : 'transparent',
+    color: active ? '#fff' : TEXT_DIM,
+    cursor: 'pointer',
+    transition: 'all 0.15s',
+    padding: 0,
+  }),
+  toolbarDivider: {
+    width: 1,
+    height: 22,
+    background: BORDER,
+    margin: '0 6px',
+    flexShrink: 0,
+  },
 };
 
 /* ───────────────────────── main component ───────────────────────── */
@@ -801,8 +834,8 @@ export default function App() {
 
   const canNext = useMemo(() => {
     if (step === 0) return !!htmlContent;
-    if (step === 2) return !!metaTitle.trim() && !!slug.trim();
-    if (step === 4) return !!apiToken && !!collectionId;
+    if (step === 3) return !!metaTitle.trim() && !!slug.trim();
+    if (step === 5) return !!apiToken && !!collectionId;
     return true;
   }, [step, htmlContent, metaTitle, slug, apiToken, collectionId]);
 
@@ -993,30 +1026,22 @@ export default function App() {
 
               {images.length > 0 && (
                 <div style={{ ...s.imgGrid, marginTop: 16 }}>
-                  {images.map((img, i) => {
-                    const hasAlt = !!altTexts[img.name];
-                    return (
-                      <div key={i} style={s.imgCard}>
-                        <img src={img.dataUrl} alt={img.name} style={s.imgThumb} />
-                        <button style={s.deleteBtn} onClick={() => removeImage(i)} title="Remove"><Trash2 size={12} /></button>
-                        {hasAlt && (
-                          <div style={{ position: 'absolute', top: 4, left: 4 }}>
-                            <CheckCircle2 size={18} color="#22c55e" />
-                          </div>
-                        )}
-                        <div style={s.imgInfo}>
-                          {img.name}
-                          {hasAlt && (
-                            <div style={{ color: '#22c55e', marginTop: 2, fontSize: 10 }}>{altTexts[img.name]}</div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {images.map((img, i) => (
+                    <div key={i} style={s.imgCard}>
+                      <img src={img.dataUrl} alt={img.name} style={s.imgThumb} />
+                      <button style={s.deleteBtn} onClick={() => removeImage(i)} title="Remove"><Trash2 size={12} /></button>
+                      <div style={s.imgInfo}>{img.name}</div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
+          </>
+        )}
 
+        {/* ──────── STEP 3: ALT TEXT ──────── */}
+        {step === 2 && (
+          <>
             <div style={s.card}>
               <label style={s.label}>Alt Texts</label>
               <p style={{ fontSize: 12, color: TEXT_DIM, marginBottom: 12 }}>
@@ -1055,6 +1080,39 @@ export default function App() {
               />
             </div>
 
+            {/* Image preview with alt text status */}
+            {images.length > 0 && (
+              <div style={s.card}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                  <label style={{ ...s.label, marginBottom: 0 }}>Image &amp; Alt Text Mapping</label>
+                  <span style={{ fontSize: 12, color: TEXT_DIM }}>
+                    {Object.keys(altTexts).filter((k) => images.some((img) => img.name === k)).length}/{images.length} matched
+                  </span>
+                </div>
+                <div style={{ ...s.imgGrid }}>
+                  {images.map((img, i) => {
+                    const hasAlt = !!altTexts[img.name];
+                    return (
+                      <div key={i} style={s.imgCard}>
+                        <img src={img.dataUrl} alt={img.name} style={s.imgThumb} />
+                        {hasAlt && (
+                          <div style={{ position: 'absolute', top: 4, left: 4 }}>
+                            <CheckCircle2 size={18} color="#22c55e" />
+                          </div>
+                        )}
+                        <div style={s.imgInfo}>
+                          {img.name}
+                          {hasAlt && (
+                            <div style={{ color: '#22c55e', marginTop: 2, fontSize: 10 }}>{altTexts[img.name]}</div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {images.length > 0 && (
               <div style={{ textAlign: 'center', marginTop: 8 }}>
                 <button
@@ -1068,8 +1126,8 @@ export default function App() {
           </>
         )}
 
-        {/* ──────── STEP 3: META ──────── */}
-        {step === 2 && (
+        {/* ──────── STEP 4: META ──────── */}
+        {step === 3 && (
           <>
             <div style={s.card}>
               <div style={{ marginBottom: 20 }}>
@@ -1165,13 +1223,102 @@ export default function App() {
           </>
         )}
 
-        {/* ──────── STEP 4: PREVIEW ──────── */}
-        {step === 3 && (
+        {/* ──────── STEP 5: PREVIEW ──────── */}
+        {step === 4 && (
           <div style={s.card}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <label style={{ ...s.label, marginBottom: 0 }}>Live Preview</label>
               <span style={s.tag}><Eye size={12} /> Editable</span>
             </div>
+
+            {/* ── Formatting Toolbar ── */}
+            <div style={s.toolbar}>
+              <button
+                style={s.toolbarBtn(false)}
+                title="Bold"
+                onMouseDown={(e) => { e.preventDefault(); document.execCommand('bold'); }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
+              >
+                <Bold size={16} />
+              </button>
+              <button
+                style={s.toolbarBtn(false)}
+                title="Italic"
+                onMouseDown={(e) => { e.preventDefault(); document.execCommand('italic'); }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
+              >
+                <Italic size={16} />
+              </button>
+
+              <div style={s.toolbarDivider} />
+
+              <button
+                style={s.toolbarBtn(false)}
+                title="Heading 1"
+                onMouseDown={(e) => { e.preventDefault(); document.execCommand('formatBlock', false, 'h1'); }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
+              >
+                <Heading1 size={16} />
+              </button>
+              <button
+                style={s.toolbarBtn(false)}
+                title="Heading 2"
+                onMouseDown={(e) => { e.preventDefault(); document.execCommand('formatBlock', false, 'h2'); }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
+              >
+                <Heading2 size={16} />
+              </button>
+              <button
+                style={s.toolbarBtn(false)}
+                title="Heading 3"
+                onMouseDown={(e) => { e.preventDefault(); document.execCommand('formatBlock', false, 'h3'); }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
+              >
+                <Heading3 size={16} />
+              </button>
+              <button
+                style={s.toolbarBtn(false)}
+                title="Normal paragraph"
+                onMouseDown={(e) => { e.preventDefault(); document.execCommand('formatBlock', false, 'p'); }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
+              >
+                <Type size={16} />
+              </button>
+
+              <div style={s.toolbarDivider} />
+
+              <button
+                style={s.toolbarBtn(false)}
+                title="Insert Link"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  const url = prompt('Enter URL:');
+                  if (url) {
+                    document.execCommand('createLink', false, url);
+                    // Set target=_blank on newly created link
+                    const sel = window.getSelection();
+                    if (sel.rangeCount) {
+                      const anchor = sel.anchorNode?.parentElement?.closest('a') || sel.anchorNode?.parentElement;
+                      if (anchor && anchor.tagName === 'A') {
+                        anchor.setAttribute('target', '_blank');
+                        anchor.setAttribute('rel', 'noopener noreferrer');
+                      }
+                    }
+                  }
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
+              >
+                <Link2 size={16} />
+              </button>
+            </div>
+
             <div
               ref={previewRef}
               contentEditable
@@ -1182,14 +1329,15 @@ export default function App() {
                 minHeight: 300,
                 outline: 'none',
                 cursor: 'text',
+                borderRadius: '0 0 8px 8px',
               }}
               dangerouslySetInnerHTML={{ __html: htmlContent }}
             />
           </div>
         )}
 
-        {/* ──────── STEP 5: PUBLISH ──────── */}
-        {step === 4 && (
+        {/* ──────── STEP 6: PUBLISH ──────── */}
+        {step === 5 && (
           <>
             <div style={s.card}>
               <label style={{ ...s.label, marginBottom: 16 }}>Pre-Publish Summary</label>
@@ -1278,7 +1426,7 @@ export default function App() {
         >
           <ChevronLeft size={16} /> Back
         </button>
-        {step < 4 ? (
+        {step < 5 ? (
           <button
             style={s.btn(true, !canNext)}
             disabled={!canNext}
