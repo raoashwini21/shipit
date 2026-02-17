@@ -1,9 +1,17 @@
+export const config = { api: { bodyParser: true } };
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { collectionId, apiToken, fieldData } = req.body;
+  // Parse body — Vercel may pass it as string or object
+  let body = req.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); } catch { return res.status(400).json({ error: 'Invalid JSON body' }); }
+  }
+
+  const { collectionId, apiToken, fieldData } = body || {};
 
   if (!collectionId || !apiToken || !fieldData) {
     return res.status(400).json({ error: 'Missing collectionId, apiToken, or fieldData' });
