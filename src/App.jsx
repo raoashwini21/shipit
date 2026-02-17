@@ -36,6 +36,44 @@ function cleanGoogleHtml(html) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, 'text/html');
 
+  // Convert Google Docs flat lists to proper nested lists.
+  // Google Docs outputs <li style="margin-left:XXpt"> instead of nested <ul>/<ol>.
+  doc.querySelectorAll('ul, ol').forEach((list) => {
+    const items = Array.from(list.querySelectorAll(':scope > li'));
+    items.forEach((li) => {
+      const ml = parseFloat(li.style.marginLeft || li.style.paddingLeft || '0');
+      // level 0 = no indent, level 1 = ~36pt, level 2 = ~72pt, etc.
+      const level = ml > 10 ? Math.round(ml / 36) : 0;
+      li.dataset.nestLevel = level;
+    });
+
+    // Build nested structure
+    for (let i = items.length - 1; i >= 0; i--) {
+      const li = items[i];
+      const level = parseInt(li.dataset.nestLevel || '0');
+      if (level > 0) {
+        // Find the nearest preceding <li> with a lower level
+        let parent = null;
+        for (let j = i - 1; j >= 0; j--) {
+          const prevLevel = parseInt(items[j].dataset.nestLevel || '0');
+          if (prevLevel < level) {
+            parent = items[j];
+            break;
+          }
+        }
+        if (parent) {
+          let subList = parent.querySelector(':scope > ul, :scope > ol');
+          if (!subList) {
+            subList = doc.createElement(list.tagName.toLowerCase());
+            parent.appendChild(subList);
+          }
+          subList.appendChild(li);
+        }
+      }
+      delete li.dataset.nestLevel;
+    }
+  });
+
   // Convert bold spans
   doc.querySelectorAll('span').forEach((span) => {
     const fw = span.style.fontWeight;
@@ -119,30 +157,12 @@ function sanitizeListsForWebflow(html) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, 'text/html');
 
-  // Flatten nested lists
-  let found = true;
-  while (found) {
-    found = false;
-    doc.querySelectorAll('ul ul, ul ol, ol ul, ol ol').forEach((nested) => {
-      found = true;
-      const parent = nested.parentElement; // should be <li>
-      const grandparent = parent ? parent.parentElement : null;
-      if (!grandparent) { nested.remove(); return; }
-      const items = nested.querySelectorAll(':scope > li');
-      items.forEach((li) => {
-        li.innerHTML = '— ' + li.innerHTML;
-        grandparent.insertBefore(li, parent.nextSibling);
-      });
-      nested.remove();
-    });
-  }
-
-  // Add roles
+  // Add roles for accessibility (preserve nested list structure)
   doc.querySelectorAll('ul, ol').forEach((list) => list.setAttribute('role', 'list'));
   doc.querySelectorAll('li').forEach((li) => {
     li.setAttribute('role', 'listitem');
     // Unwrap <span> inside <li>
-    li.querySelectorAll('span').forEach((span) => {
+    li.querySelectorAll(':scope > span').forEach((span) => {
       const frag = doc.createDocumentFragment();
       while (span.firstChild) frag.appendChild(span.firstChild);
       span.replaceWith(frag);
