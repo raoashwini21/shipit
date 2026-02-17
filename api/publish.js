@@ -5,20 +5,22 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Parse body — Vercel may pass it as string or object
   let body = req.body;
   if (typeof body === 'string') {
     try { body = JSON.parse(body); } catch { return res.status(400).json({ error: 'Invalid JSON body' }); }
   }
-
-  const { collectionId, apiToken, fieldData } = body || {};
-
-  if (!collectionId || !apiToken || !fieldData) {
-    return res.status(400).json({ error: 'Missing collectionId, apiToken, or fieldData' });
+  if (!body || typeof body !== 'object') {
+    return res.status(400).json({ error: 'Request body is empty or not an object' });
   }
 
+  const { collectionId, apiToken, fieldData } = body;
+
+  if (!collectionId) return res.status(400).json({ error: 'Missing collectionId' });
+  if (!apiToken) return res.status(400).json({ error: 'Missing apiToken' });
+  if (!fieldData) return res.status(400).json({ error: 'Missing fieldData' });
+
   try {
-    const resp = await fetch(
+    const webflowResp = await fetch(
       `https://api.webflow.com/v2/collections/${collectionId}/items`,
       {
         method: 'POST',
@@ -35,14 +37,12 @@ export default async function handler(req, res) {
       }
     );
 
-    const data = await resp.json();
+    const text = await webflowResp.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { error: text }; }
 
-    if (!resp.ok) {
-      return res.status(resp.status).json(data);
-    }
-
-    return res.status(200).json(data);
+    return res.status(webflowResp.status).json(data);
   } catch (e) {
-    return res.status(500).json({ error: e.message });
+    return res.status(500).json({ error: 'Proxy error: ' + e.message });
   }
 }

@@ -36,43 +36,93 @@ function cleanGoogleHtml(html) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, 'text/html');
 
-  // Convert Google Docs flat lists to proper nested lists.
-  // Google Docs outputs <li style="margin-left:XXpt"> instead of nested <ul>/<ol>.
-  doc.querySelectorAll('ul, ol').forEach((list) => {
-    const items = Array.from(list.querySelectorAll(':scope > li'));
-    items.forEach((li) => {
-      const ml = parseFloat(li.style.marginLeft || li.style.paddingLeft || '0');
-      // level 0 = no indent, level 1 = ~36pt, level 2 = ~72pt, etc.
-      const level = ml > 10 ? Math.round(ml / 36) : 0;
-      li.dataset.nestLevel = level;
-    });
+  // ── Merge Google Docs fragmented lists into properly nested lists ──
+  // Google Docs exports each list item as a separate <ul>/<ol> with classes
+  // like "lst-kix_abc123-0" (level 0), "lst-kix_abc123-1" (level 1), etc.
+  // We merge consecutive same-list-id elements into one nested structure.
 
-    // Build nested structure
-    for (let i = items.length - 1; i >= 0; i--) {
-      const li = items[i];
-      const level = parseInt(li.dataset.nestLevel || '0');
-      if (level > 0) {
-        // Find the nearest preceding <li> with a lower level
-        let parent = null;
-        for (let j = i - 1; j >= 0; j--) {
-          const prevLevel = parseInt(items[j].dataset.nestLevel || '0');
-          if (prevLevel < level) {
-            parent = items[j];
-            break;
+  function getListInfo(el) {
+    if (!el || (el.tagName !== 'UL' && el.tagName !== 'OL')) return null;
+    const cls = el.getAttribute('class') || '';
+    // Match lst-kix_XXXX-N or c[0-9] li-bullet-N patterns
+    const kixMatch = cls.match(/lst-(\w+)-(\d+)/);
+    if (kixMatch) return { listId: kixMatch[1], level: parseInt(kixMatch[2]) };
+    // Fallback: detect level from li-bullet-N class on child <li>
+    const li = el.querySelector(':scope > li');
+    if (li) {
+      const liCls = li.getAttribute('class') || '';
+      const bulletMatch = liCls.match(/li-bullet-(\d+)/);
+      if (bulletMatch) return { listId: '_default', level: parseInt(bulletMatch[1]) };
+    }
+    return { listId: '_default', level: 0 };
+  }
+
+  // Collect consecutive list elements into groups
+  const body = doc.body;
+  const children = Array.from(body.children);
+  let i = 0;
+  while (i < children.length) {
+    const el = children[i];
+    const info = getListInfo(el);
+    if (!info) { i++; continue; }
+
+    // Gather all consecutive list elements
+    const group = [{ el, info }];
+    let j = i + 1;
+    while (j < children.length) {
+      const nextInfo = getListInfo(children[j]);
+      if (!nextInfo) break;
+      group.push({ el: children[j], info: nextInfo });
+      j++;
+    }
+
+    if (group.length > 1) {
+      // Build a single nested list from the group
+      const rootTag = group[0].el.tagName.toLowerCase();
+      const rootList = doc.createElement(rootTag);
+      // Stack: array of { list, level }
+      const stack = [{ list: rootList, level: 0 }];
+
+      for (const { el: listEl, info: lInfo } of group) {
+        const items = Array.from(listEl.querySelectorAll(':scope > li'));
+        for (const li of items) {
+          const level = lInfo.level;
+          // Pop stack until we find the right parent level
+          while (stack.length > 1 && stack[stack.length - 1].level >= level) {
+            stack.pop();
           }
-        }
-        if (parent) {
-          let subList = parent.querySelector(':scope > ul, :scope > ol');
-          if (!subList) {
-            subList = doc.createElement(list.tagName.toLowerCase());
-            parent.appendChild(subList);
+          const parentList = stack[stack.length - 1].list;
+
+          if (level > stack[stack.length - 1].level) {
+            // Need to nest deeper — create sub-list inside last <li> of parent
+            const lastLi = parentList.querySelector(':scope > li:last-child');
+            if (lastLi) {
+              const subTag = listEl.tagName.toLowerCase();
+              const subList = doc.createElement(subTag);
+              lastLi.appendChild(subList);
+              stack.push({ list: subList, level });
+              subList.appendChild(li);
+            } else {
+              parentList.appendChild(li);
+            }
+          } else {
+            parentList.appendChild(li);
           }
-          subList.appendChild(li);
         }
       }
-      delete li.dataset.nestLevel;
+
+      // Replace the first element with the merged list, remove the rest
+      group[0].el.replaceWith(rootList);
+      for (let k = 1; k < group.length; k++) {
+        group[k].el.remove();
+      }
+
+      // Re-read children since DOM changed
+      i++;
+    } else {
+      i = j;
     }
-  });
+  }
 
   // Convert bold spans
   doc.querySelectorAll('span').forEach((span) => {
@@ -830,9 +880,14 @@ export default function App() {
           },
         }),
       });
-      const data = await resp.json();
+      let data;
+      const text = await resp.text();
+      try { data = JSON.parse(text); } catch { data = { error: text }; }
       if (!resp.ok) {
-        setPublishResult({ ok: false, error: data.message || data.msg || data.error || JSON.stringify(data) });
+        const detail = data.message || data.msg || data.error
+          || (data.details && JSON.stringify(data.details))
+          || JSON.stringify(data);
+        setPublishResult({ ok: false, error: `HTTP ${resp.status}: ${detail}` });
       } else {
         setPublishResult({ ok: true, id: data.id || data._id });
       }
