@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Send, Settings, ChevronLeft, ChevronRight, Upload, Link, FileText, Image, Eye, Rocket, Check, AlertTriangle, X, Type, Globe, CheckCircle2, FileUp, Trash2 } from 'lucide-react';
+import { Send, Settings, ChevronLeft, ChevronRight, Upload, Link, FileText, Image, Eye, Rocket, Check, AlertTriangle, X, Type, Globe, CheckCircle2, FileUp, Trash2, FolderOpen } from 'lucide-react';
 import mammoth from 'mammoth';
 
 /* ───────────────────────── constants ───────────────────────── */
@@ -594,7 +594,8 @@ export default function App() {
 
   const fileInputRef = useRef(null);
   const imgInputRef = useRef(null);
-  const altFileInputRef = useRef(null);
+  const imgFolderInputRef = useRef(null);
+  const altFolderInputRef = useRef(null);
 
   /* persist settings */
   useEffect(() => { localStorage.setItem('shipit_token', apiToken); }, [apiToken]);
@@ -652,7 +653,7 @@ export default function App() {
   /* ── Step 2 handlers ── */
 
   const handleImageUpload = useCallback((e) => {
-    const files = Array.from(e.target.files || []);
+    const files = Array.from(e.target.files || []).filter((f) => f.type.startsWith('image/'));
     const sorted = files.sort((a, b) => a.name.localeCompare(b.name));
     const promises = sorted.map(
       (f) =>
@@ -686,14 +687,37 @@ export default function App() {
     setAltTexts(map);
   }, []);
 
-  const handleAltFileUpload = useCallback((e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => parseAltTexts(reader.result);
-    reader.readAsText(file);
+  const handleAltFolderUpload = useCallback((e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const map = {};
+    const lines = [];
+    const promises = files.map(
+      (f) =>
+        new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const altText = (reader.result || '').trim();
+            if (altText) {
+              // File name IS the image name (e.g. "hero.webp" or "hero.webp.txt")
+              const key = f.name.replace(/\.txt$/i, '');
+              map[key] = altText;
+              lines.push(`${key} - ${altText}`);
+            }
+            resolve();
+          };
+          reader.readAsText(f);
+        })
+    );
+    Promise.all(promises).then(() => {
+      setAltTexts((prev) => ({ ...prev, ...map }));
+      setAltTextRaw((prev) => {
+        const combined = prev ? prev + '\n' + lines.join('\n') : lines.join('\n');
+        return combined.trim();
+      });
+    });
     e.target.value = '';
-  }, [parseAltTexts]);
+  }, []);
 
   const replaceImagesInBlog = useCallback(() => {
     const parser = new DOMParser();
@@ -940,14 +964,31 @@ export default function App() {
                 style={{ display: 'none' }}
                 onChange={handleImageUpload}
               />
-              <button
-                style={s.btn(true, false)}
-                onClick={() => imgInputRef.current?.click()}
-              >
-                <Upload size={16} /> Select Images
-              </button>
+              <input
+                ref={imgFolderInputRef}
+                type="file"
+                webkitdirectory=""
+                directory=""
+                multiple
+                style={{ display: 'none' }}
+                onChange={handleImageUpload}
+              />
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  style={s.btn(true, false)}
+                  onClick={() => imgInputRef.current?.click()}
+                >
+                  <Upload size={16} /> Select Files
+                </button>
+                <button
+                  style={s.btn(false, false)}
+                  onClick={() => imgFolderInputRef.current?.click()}
+                >
+                  <FolderOpen size={16} /> Upload Folder
+                </button>
+              </div>
               <p style={{ fontSize: 12, color: TEXT_DIM, marginTop: 8 }}>
-                Select multiple compressed images. They will be sorted by filename automatically.
+                Select individual images or an entire folder. Sorted by filename automatically.
               </p>
 
               {images.length > 0 && (
@@ -979,27 +1020,34 @@ export default function App() {
             <div style={s.card}>
               <label style={s.label}>Alt Texts</label>
               <p style={{ fontSize: 12, color: TEXT_DIM, marginBottom: 12 }}>
-                Format: <code style={{ fontFamily: FONT_MONO, background: SURFACE2, padding: '2px 6px', borderRadius: 4, fontSize: 11 }}>filename.png - Alt text description</code> (one per line)
+                Upload a folder of text files — each file named after its image (e.g. <code style={{ fontFamily: FONT_MONO, background: SURFACE2, padding: '2px 6px', borderRadius: 4, fontSize: 11 }}>hero.webp</code> or <code style={{ fontFamily: FONT_MONO, background: SURFACE2, padding: '2px 6px', borderRadius: 4, fontSize: 11 }}>hero.webp.txt</code>), containing the alt text as its content.
               </p>
               <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
                 <input
-                  ref={altFileInputRef}
+                  ref={altFolderInputRef}
                   type="file"
-                  accept=".txt"
+                  webkitdirectory=""
+                  directory=""
+                  multiple
                   style={{ display: 'none' }}
-                  onChange={handleAltFileUpload}
+                  onChange={handleAltFolderUpload}
                 />
                 <button
-                  style={s.btn(false, false)}
-                  onClick={() => altFileInputRef.current?.click()}
+                  style={s.btn(true, false)}
+                  onClick={() => altFolderInputRef.current?.click()}
                 >
-                  <Upload size={14} /> Upload .txt
+                  <FolderOpen size={16} /> Upload Alt Text Folder
                 </button>
+                {Object.keys(altTexts).length > 0 && (
+                  <span style={{ ...s.tag, alignSelf: 'center' }}>
+                    <CheckCircle2 size={12} color="#22c55e" /> {Object.keys(altTexts).length} matched
+                  </span>
+                )}
               </div>
               <textarea
                 style={s.textarea}
                 rows={6}
-                placeholder={"hero.png - A team collaborating on a project\nfeature.png - Dashboard analytics overview"}
+                placeholder={"hero.webp - A team collaborating on a project\nfeature.jpg - Dashboard analytics overview\n\n(Auto-filled from folder upload, or type manually)"}
                 value={altTextRaw}
                 onChange={(e) => parseAltTexts(e.target.value)}
                 onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
