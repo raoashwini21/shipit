@@ -794,32 +794,25 @@ export default function App() {
       previewRef.current ? previewRef.current.innerHTML : htmlContent
     );
     try {
-      const resp = await fetch(
-        `https://api.webflow.com/v2/collections/${collectionId}/items`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiToken}`,
-            'Content-Type': 'application/json',
-            accept: 'application/json',
+      const resp = await fetch('/api/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          collectionId,
+          apiToken,
+          fieldData: {
+            name: metaTitle,
+            slug,
+            'post-body': finalHtml,
+            'meta-title': seoTitle,
+            'meta-description': metaDesc,
+            'post-summary': excerpt,
           },
-          body: JSON.stringify({
-            isArchived: false,
-            isDraft: true,
-            fieldData: {
-              name: metaTitle,
-              slug,
-              'post-body': finalHtml,
-              'meta-title': seoTitle,
-              'meta-description': metaDesc,
-              'post-summary': excerpt,
-            },
-          }),
-        }
-      );
+        }),
+      });
       const data = await resp.json();
       if (!resp.ok) {
-        setPublishResult({ ok: false, error: data.message || data.msg || JSON.stringify(data) });
+        setPublishResult({ ok: false, error: data.message || data.msg || data.error || JSON.stringify(data) });
       } else {
         setPublishResult({ ok: true, id: data.id || data._id });
       }
@@ -1330,6 +1323,26 @@ export default function App() {
                 outline: 'none',
                 cursor: 'text',
                 borderRadius: '0 0 8px 8px',
+              }}
+              onClick={(e) => {
+                const anchor = e.target.closest('a');
+                if (anchor) {
+                  e.preventDefault();
+                  const currentHref = anchor.getAttribute('href') || '';
+                  const newHref = prompt('Edit link URL:', currentHref);
+                  if (newHref !== null) {
+                    if (newHref.trim() === '') {
+                      // Remove the link, keep the text
+                      const frag = document.createDocumentFragment();
+                      while (anchor.firstChild) frag.appendChild(anchor.firstChild);
+                      anchor.replaceWith(frag);
+                    } else {
+                      anchor.setAttribute('href', newHref);
+                      anchor.setAttribute('target', '_blank');
+                      anchor.setAttribute('rel', 'noopener noreferrer');
+                    }
+                  }
+                }
               }}
               dangerouslySetInnerHTML={{ __html: htmlContent }}
             />
