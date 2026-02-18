@@ -696,10 +696,10 @@ export default function App() {
         body: saved.body || 'post-body',
         metaTitle: saved.metaTitle || 'meta-title',
         metaDesc: saved.metaDesc || 'meta-description',
-        excerpt: saved.excerpt || 'post-summary',
+        excerpt: saved.excerpt || 'excerpt',
       };
     } catch {
-      return { body: 'post-body', metaTitle: 'meta-title', metaDesc: 'meta-description', excerpt: 'post-summary' };
+      return { body: 'post-body', metaTitle: 'meta-title', metaDesc: 'meta-description', excerpt: 'excerpt' };
     }
   });
 
@@ -1643,7 +1643,7 @@ export default function App() {
                 { key: 'body', label: 'Post Body (Rich Text)', placeholder: 'post-body' },
                 { key: 'metaTitle', label: 'Meta Title', placeholder: 'meta-title' },
                 { key: 'metaDesc', label: 'Meta Description', placeholder: 'meta-description' },
-                { key: 'excerpt', label: 'Post Summary / Excerpt', placeholder: 'post-summary' },
+                { key: 'excerpt', label: 'Post Summary / Excerpt', placeholder: 'excerpt' },
               ].map(({ key, label, placeholder }) => (
                 <div key={key} style={{ marginBottom: 10 }}>
                   <label style={{ fontSize: 12, color: TEXT_DIM, display: 'block', marginBottom: 4 }}>{label}</label>
