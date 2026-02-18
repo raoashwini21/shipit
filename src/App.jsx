@@ -235,18 +235,52 @@ function sanitizeListsForWebflow(html) {
   return doc.body.innerHTML;
 }
 
-async function uploadDataUrlImages(html, { siteId, apiToken, onProgress }) {
+async function uploadDataUrlImages(html, { siteId, apiToken, images, altTexts, onProgress }) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, 'text/html');
-  const imgs = Array.from(doc.querySelectorAll('img')).filter(
+
+  // Step A: Inject uploaded images + alt texts into the HTML (same logic as replaceImagesInBlog).
+  // This ensures images/alts are always applied even if the user didn't click "Replace Images"
+  // or if the contentEditable DOM was stale.
+  if (images && images.length > 0) {
+    const inlineImgs = doc.querySelectorAll('img');
+    let imgIdx = 0;
+
+    inlineImgs.forEach((img) => {
+      if (imgIdx < images.length) {
+        const imgData = images[imgIdx];
+        img.setAttribute('src', imgData.dataUrl);
+        const alt = (altTexts && altTexts[imgData.name]) || imgData.name;
+        img.setAttribute('alt', alt);
+        imgIdx++;
+      }
+    });
+
+    // Append remaining images at end
+    while (imgIdx < images.length) {
+      const imgData = images[imgIdx];
+      const imgEl = doc.createElement('img');
+      imgEl.setAttribute('src', imgData.dataUrl);
+      const alt = (altTexts && altTexts[imgData.name]) || imgData.name;
+      imgEl.setAttribute('alt', alt);
+      imgEl.style.maxWidth = '100%';
+      const p = doc.createElement('p');
+      p.appendChild(imgEl);
+      doc.body.appendChild(p);
+      imgIdx++;
+    }
+  }
+
+  // Step B: Find all data-URL images and upload to Webflow CDN (or placeholder fallback)
+  const dataImgs = Array.from(doc.querySelectorAll('img')).filter(
     (img) => (img.getAttribute('src') || '').startsWith('data:')
   );
 
-  if (!imgs.length) return doc.body.innerHTML;
+  if (!dataImgs.length) return doc.body.innerHTML;
 
   // If no siteId, fall back to placeholder behavior
   if (!siteId || !apiToken) {
-    imgs.forEach((img) => {
+    dataImgs.forEach((img) => {
       const alt = img.getAttribute('alt') || 'image';
       const placeholder = doc.createElement('p');
       placeholder.innerHTML = `<strong>[Image: ${alt}]</strong>`;
@@ -255,11 +289,11 @@ async function uploadDataUrlImages(html, { siteId, apiToken, onProgress }) {
     return doc.body.innerHTML;
   }
 
-  for (let i = 0; i < imgs.length; i++) {
-    const img = imgs[i];
+  for (let i = 0; i < dataImgs.length; i++) {
+    const img = dataImgs[i];
     const src = img.getAttribute('src');
     const alt = img.getAttribute('alt') || `image-${i + 1}`;
-    if (onProgress) onProgress(i + 1, imgs.length, alt);
+    if (onProgress) onProgress(i + 1, dataImgs.length, alt);
 
     try {
       // Parse data URL → base64 + contentType
@@ -977,6 +1011,8 @@ export default function App() {
     const finalHtml = await uploadDataUrlImages(sanitized, {
       siteId,
       apiToken,
+      images,
+      altTexts,
       onProgress: (i, total, name) => setUploadProgress(`Uploading image ${i}/${total}: ${name}`),
     });
     setUploadProgress('');
@@ -1010,7 +1046,7 @@ export default function App() {
     } finally {
       setPublishing(false);
     }
-  }, [htmlContent, apiToken, collectionId, siteId, metaTitle, slug, seoTitle, metaDesc, excerpt, fieldMap]);
+  }, [htmlContent, apiToken, collectionId, siteId, images, altTexts, metaTitle, slug, seoTitle, metaDesc, excerpt, fieldMap]);
 
   /* ── Navigation guard ── */
 
