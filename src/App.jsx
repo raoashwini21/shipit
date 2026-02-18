@@ -235,20 +235,63 @@ function sanitizeListsForWebflow(html) {
   return doc.body.innerHTML;
 }
 
-function stripDataUrlImages(html) {
+async function uploadDataUrlImages(html, { siteId, apiToken, onProgress }) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, 'text/html');
-  doc.querySelectorAll('img').forEach((img) => {
-    const src = img.getAttribute('src') || '';
-    if (src.startsWith('data:')) {
-      // Replace data URL with a placeholder — Webflow can't use base64 images.
-      // Keep alt text so user knows where to add the image in Webflow.
+  const imgs = Array.from(doc.querySelectorAll('img')).filter(
+    (img) => (img.getAttribute('src') || '').startsWith('data:')
+  );
+
+  if (!imgs.length) return doc.body.innerHTML;
+
+  // If no siteId, fall back to placeholder behavior
+  if (!siteId || !apiToken) {
+    imgs.forEach((img) => {
       const alt = img.getAttribute('alt') || 'image';
       const placeholder = doc.createElement('p');
       placeholder.innerHTML = `<strong>[Image: ${alt}]</strong>`;
       img.parentElement?.replaceChild(placeholder, img);
+    });
+    return doc.body.innerHTML;
+  }
+
+  for (let i = 0; i < imgs.length; i++) {
+    const img = imgs[i];
+    const src = img.getAttribute('src');
+    const alt = img.getAttribute('alt') || `image-${i + 1}`;
+    if (onProgress) onProgress(i + 1, imgs.length, alt);
+
+    try {
+      // Parse data URL → base64 + contentType
+      const match = src.match(/^data:([^;]+);base64,(.+)$/);
+      if (!match) continue;
+      const contentType = match[1];
+      const fileBase64 = match[2];
+      const ext = contentType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+      const fileName = alt.replace(/[^a-zA-Z0-9_-]/g, '_') + '.' + ext;
+
+      const resp = await fetch('/api/upload-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId, apiToken, fileName, fileBase64, contentType }),
+      });
+
+      const data = await resp.json();
+      if (resp.ok && data.url) {
+        img.setAttribute('src', data.url);
+      } else {
+        // Upload failed — insert placeholder instead of bloating payload
+        const placeholder = doc.createElement('p');
+        placeholder.innerHTML = `<strong>[Image: ${alt} — upload failed]</strong>`;
+        img.parentElement?.replaceChild(placeholder, img);
+      }
+    } catch {
+      const placeholder = doc.createElement('p');
+      placeholder.innerHTML = `<strong>[Image: ${alt} — upload failed]</strong>`;
+      img.parentElement?.replaceChild(placeholder, img);
     }
-  });
+  }
+
   return doc.body.innerHTML;
 }
 
@@ -684,6 +727,7 @@ export default function App() {
   // Settings
   const [apiToken, setApiToken] = useState(() => localStorage.getItem('shipit_token') || '');
   const [collectionId, setCollectionId] = useState(() => localStorage.getItem('shipit_collection') || '');
+  const [siteId, setSiteId] = useState(() => localStorage.getItem('shipit_siteid') || '');
 
   // Field mapping
   const [collectionFields, setCollectionFields] = useState([]);
@@ -732,6 +776,7 @@ export default function App() {
   // Step 5
   const [publishing, setPublishing] = useState(false);
   const [publishResult, setPublishResult] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState('');
 
   const fileInputRef = useRef(null);
   const imgInputRef = useRef(null);
@@ -741,6 +786,7 @@ export default function App() {
   /* persist settings */
   useEffect(() => { localStorage.setItem('shipit_token', apiToken); }, [apiToken]);
   useEffect(() => { localStorage.setItem('shipit_collection', collectionId); }, [collectionId]);
+  useEffect(() => { localStorage.setItem('shipit_siteid', siteId); }, [siteId]);
   useEffect(() => { localStorage.setItem('shipit_fieldmap', JSON.stringify(fieldMap)); }, [fieldMap]);
 
   const fetchCollectionFields = useCallback(async () => {
@@ -925,8 +971,15 @@ export default function App() {
   const handlePublish = useCallback(async () => {
     setPublishing(true);
     setPublishResult(null);
+    setUploadProgress('');
     const rawHtml = previewRef.current ? previewRef.current.innerHTML : htmlContent;
-    const finalHtml = stripDataUrlImages(sanitizeListsForWebflow(rawHtml));
+    const sanitized = sanitizeListsForWebflow(rawHtml);
+    const finalHtml = await uploadDataUrlImages(sanitized, {
+      siteId,
+      apiToken,
+      onProgress: (i, total, name) => setUploadProgress(`Uploading image ${i}/${total}: ${name}`),
+    });
+    setUploadProgress('');
 
     // Build fieldData using mapped field slugs
     const fieldData = { name: metaTitle, slug };
@@ -957,7 +1010,7 @@ export default function App() {
     } finally {
       setPublishing(false);
     }
-  }, [htmlContent, apiToken, collectionId, metaTitle, slug, seoTitle, metaDesc, excerpt, fieldMap]);
+  }, [htmlContent, apiToken, collectionId, siteId, metaTitle, slug, seoTitle, metaDesc, excerpt, fieldMap]);
 
   /* ── Navigation guard ── */
 
@@ -1551,6 +1604,18 @@ export default function App() {
                 >
                   <Rocket size={16} /> {publishing ? 'Publishing...' : 'Push as Draft'}
                 </button>
+                {publishing && uploadProgress && (
+                  <div style={{ fontSize: 12, color: TEXT_DIM, marginTop: 8 }}>
+                    <Upload size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
+                    {uploadProgress}
+                  </div>
+                )}
+                {!siteId && images.length > 0 && !publishing && (
+                  <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 8 }}>
+                    <AlertTriangle size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
+                    Add Site ID in Settings to upload images to Webflow CDN
+                  </div>
+                )}
               </div>
             )}
 
@@ -1635,6 +1700,22 @@ export default function App() {
                 onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
                 onBlur={(e) => { e.target.style.borderColor = BORDER; }}
               />
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <label style={s.label}>Site ID <span style={{ fontWeight: 400, color: TEXT_DIM }}>(for image uploads)</span></label>
+              <input
+                type="text"
+                style={{ ...s.input, fontFamily: FONT_MONO }}
+                value={siteId}
+                onChange={(e) => setSiteId(e.target.value)}
+                placeholder="e.g. 6123abc..."
+                onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
+                onBlur={(e) => { e.target.style.borderColor = BORDER; }}
+              />
+              <p style={{ fontSize: 11, color: TEXT_DIM, marginTop: 4 }}>
+                Required to upload images to Webflow CDN. Find it in Site Settings &rarr; General &rarr; Site ID.
+              </p>
             </div>
 
             <div style={{ marginBottom: 20 }}>
