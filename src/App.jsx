@@ -673,7 +673,17 @@ export default function App() {
   const [fieldsLoading, setFieldsLoading] = useState(false);
   const [fieldsError, setFieldsError] = useState('');
   const [fieldMap, setFieldMap] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('shipit_fieldmap') || '{}'); } catch { return {}; }
+    try {
+      const saved = JSON.parse(localStorage.getItem('shipit_fieldmap') || '{}');
+      return {
+        body: saved.body || 'post-body',
+        metaTitle: saved.metaTitle || 'meta-title',
+        metaDesc: saved.metaDesc || 'meta-description',
+        excerpt: saved.excerpt || 'post-summary',
+      };
+    } catch {
+      return { body: 'post-body', metaTitle: 'meta-title', metaDesc: 'meta-description', excerpt: 'post-summary' };
+    }
   });
 
   // Step 1
@@ -1507,7 +1517,7 @@ export default function App() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#f59e0b', fontSize: 14 }}>
                   <AlertTriangle size={18} />
                   <span>
-                    <strong>Field mapping not configured.</strong> Open Settings, click "Fetch Fields", and map your collection fields.
+                    <strong>Post Body field slug is empty.</strong> Open Settings and enter your CMS field slugs.
                   </span>
                 </div>
               </div>
@@ -1597,66 +1607,62 @@ export default function App() {
 
             <div style={{ marginBottom: 20 }}>
               <label style={s.label}>Blog Collection ID</label>
-              <div style={{ display: 'flex', gap: 10 }}>
-                <input
-                  type="text"
-                  style={{ ...s.input, flex: 1, fontFamily: FONT_MONO }}
-                  value={collectionId}
-                  onChange={(e) => setCollectionId(e.target.value)}
-                  placeholder="e.g. 6123abc..."
-                  onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                  onBlur={(e) => { e.target.style.borderColor = BORDER; }}
-                />
+              <input
+                type="text"
+                style={{ ...s.input, fontFamily: FONT_MONO }}
+                value={collectionId}
+                onChange={(e) => setCollectionId(e.target.value)}
+                placeholder="e.g. 6123abc..."
+                onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
+                onBlur={(e) => { e.target.style.borderColor = BORDER; }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ ...s.label, marginBottom: 12 }}>CMS Field Slugs</label>
+              <p style={{ fontSize: 12, color: TEXT_DIM, marginBottom: 12 }}>
+                Enter the exact field slugs from your Webflow CMS collection. Find them in Webflow &rarr; CMS &rarr; Collection Settings &rarr; each field's slug.
+              </p>
+              {[
+                { key: 'body', label: 'Post Body (Rich Text)', placeholder: 'post-body' },
+                { key: 'metaTitle', label: 'Meta Title', placeholder: 'meta-title' },
+                { key: 'metaDesc', label: 'Meta Description', placeholder: 'meta-description' },
+                { key: 'excerpt', label: 'Post Summary / Excerpt', placeholder: 'post-summary' },
+              ].map(({ key, label, placeholder }) => (
+                <div key={key} style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 12, color: TEXT_DIM, display: 'block', marginBottom: 4 }}>{label}</label>
+                  <input
+                    type="text"
+                    style={{ ...s.input, fontFamily: FONT_MONO }}
+                    value={fieldMap[key] || ''}
+                    onChange={(e) => setFieldMap((prev) => ({ ...prev, [key]: e.target.value }))}
+                    placeholder={placeholder}
+                    onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
+                    onBlur={(e) => { e.target.style.borderColor = BORDER; }}
+                  />
+                </div>
+              ))}
+
+              {/* Optional: auto-fill from Webflow API */}
+              <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
                 <button
-                  style={s.btn(true, fieldsLoading || !apiToken || !collectionId)}
+                  style={s.btn(false, fieldsLoading || !apiToken || !collectionId)}
                   disabled={fieldsLoading || !apiToken || !collectionId}
                   onClick={fetchCollectionFields}
                 >
                   <RefreshCw size={14} style={fieldsLoading ? { animation: 'spin 1s linear infinite' } : {}} />
-                  {fieldsLoading ? 'Loading...' : 'Fetch Fields'}
+                  {fieldsLoading ? 'Loading...' : 'Auto-detect Fields'}
                 </button>
+                {collectionFields.length > 0 && (
+                  <span style={{ fontSize: 12, color: '#22c55e' }}>
+                    Found: {collectionFields.map((f) => f.slug).join(', ')}
+                  </span>
+                )}
               </div>
               {fieldsError && (
                 <div style={{ marginTop: 6, color: '#ef4444', fontSize: 12 }}>{fieldsError}</div>
               )}
             </div>
-
-            {collectionFields.length > 0 && (
-              <div style={{ marginBottom: 20 }}>
-                <label style={{ ...s.label, marginBottom: 12 }}>Field Mapping</label>
-                <p style={{ fontSize: 12, color: TEXT_DIM, marginBottom: 12 }}>
-                  Map your Webflow collection fields to ShipIt data. Select the matching field slug for each.
-                </p>
-                {[
-                  { key: 'body', label: 'Post Body (Rich Text)', type: 'RichText' },
-                  { key: 'metaTitle', label: 'Meta Title', type: 'PlainText' },
-                  { key: 'metaDesc', label: 'Meta Description', type: 'PlainText' },
-                  { key: 'excerpt', label: 'Post Summary / Excerpt', type: 'PlainText' },
-                ].map(({ key, label, type }) => (
-                  <div key={key} style={{ marginBottom: 12 }}>
-                    <label style={{ fontSize: 12, color: TEXT_DIM, display: 'block', marginBottom: 4 }}>{label}</label>
-                    <select
-                      style={{
-                        ...s.input,
-                        cursor: 'pointer',
-                        appearance: 'auto',
-                      }}
-                      value={fieldMap[key] || ''}
-                      onChange={(e) => setFieldMap((prev) => ({ ...prev, [key]: e.target.value }))}
-                    >
-                      <option value="">— skip —</option>
-                      {collectionFields
-                        .filter((f) => f.slug !== 'name' && f.slug !== 'slug')
-                        .map((f) => (
-                          <option key={f.id || f.slug} value={f.slug}>
-                            {f.displayName || f.slug} ({f.type})
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-                ))}
-              </div>
-            )}
 
             <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end' }}>
               <button style={s.btn(true, false)} onClick={() => setShowSettings(false)}>
