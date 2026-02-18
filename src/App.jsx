@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Send, Settings, ChevronLeft, ChevronRight, Upload, Link, Link2, FileText, Image, Eye, Rocket, Check, AlertTriangle, X, Type, Globe, CheckCircle2, FileUp, Trash2, FolderOpen, Bold, Italic, Heading1, Heading2, Heading3, MessageSquareText } from 'lucide-react';
+import { Send, Settings, ChevronLeft, ChevronRight, Upload, Link, Link2, FileText, Image, Eye, Rocket, Check, AlertTriangle, X, Type, Globe, CheckCircle2, FileUp, Trash2, FolderOpen, Bold, Italic, Heading1, Heading2, Heading3, MessageSquareText, RefreshCw } from 'lucide-react';
 import mammoth from 'mammoth';
 
 /* ───────────────────────── constants ───────────────────────── */
@@ -668,6 +668,14 @@ export default function App() {
   const [apiToken, setApiToken] = useState(() => localStorage.getItem('shipit_token') || '');
   const [collectionId, setCollectionId] = useState(() => localStorage.getItem('shipit_collection') || '');
 
+  // Field mapping
+  const [collectionFields, setCollectionFields] = useState([]);
+  const [fieldsLoading, setFieldsLoading] = useState(false);
+  const [fieldsError, setFieldsError] = useState('');
+  const [fieldMap, setFieldMap] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('shipit_fieldmap') || '{}'); } catch { return {}; }
+  });
+
   // Step 1
   const [contentMode, setContentMode] = useState('url'); // 'url' | 'upload'
   const [docUrl, setDocUrl] = useState('');
@@ -703,6 +711,33 @@ export default function App() {
   /* persist settings */
   useEffect(() => { localStorage.setItem('shipit_token', apiToken); }, [apiToken]);
   useEffect(() => { localStorage.setItem('shipit_collection', collectionId); }, [collectionId]);
+  useEffect(() => { localStorage.setItem('shipit_fieldmap', JSON.stringify(fieldMap)); }, [fieldMap]);
+
+  const fetchCollectionFields = useCallback(async () => {
+    if (!apiToken || !collectionId) { setFieldsError('Enter API Token and Collection ID first.'); return; }
+    setFieldsLoading(true);
+    setFieldsError('');
+    try {
+      const resp = await fetch('/api/fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collectionId, apiToken }),
+      });
+      const text = await resp.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = { error: text }; }
+      if (!resp.ok) {
+        setFieldsError(data.message || data.error || 'Failed to fetch fields');
+        return;
+      }
+      const fields = data.fields || data || [];
+      setCollectionFields(Array.isArray(fields) ? fields : []);
+    } catch (e) {
+      setFieldsError(e.message);
+    } finally {
+      setFieldsLoading(false);
+    }
+  }, [apiToken, collectionId]);
 
   /* auto-fill meta from title */
   useEffect(() => {
@@ -863,30 +898,27 @@ export default function App() {
     const finalHtml = sanitizeListsForWebflow(
       previewRef.current ? previewRef.current.innerHTML : htmlContent
     );
+
+    // Build fieldData using mapped field slugs
+    const fieldData = { name: metaTitle, slug };
+    if (fieldMap.body) fieldData[fieldMap.body] = finalHtml;
+    if (fieldMap.metaTitle) fieldData[fieldMap.metaTitle] = seoTitle;
+    if (fieldMap.metaDesc) fieldData[fieldMap.metaDesc] = metaDesc;
+    if (fieldMap.excerpt) fieldData[fieldMap.excerpt] = excerpt;
+
     try {
       const resp = await fetch('/api/publish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          collectionId,
-          apiToken,
-          fieldData: {
-            name: metaTitle,
-            slug,
-            'post-body': finalHtml,
-            'meta-title': seoTitle,
-            'meta-description': metaDesc,
-            'post-summary': excerpt,
-          },
-        }),
+        body: JSON.stringify({ collectionId, apiToken, fieldData }),
       });
       let data;
       const text = await resp.text();
       try { data = JSON.parse(text); } catch { data = { error: text }; }
       if (!resp.ok) {
-        const detail = data.message || data.msg || data.error
-          || (data.details && JSON.stringify(data.details))
-          || JSON.stringify(data);
+        let detail = data.message || data.msg || data.error || '';
+        if (data.details) detail += '\n' + JSON.stringify(data.details, null, 2);
+        if (!detail) detail = JSON.stringify(data);
         setPublishResult({ ok: false, error: `HTTP ${resp.status}: ${detail}` });
       } else {
         setPublishResult({ ok: true, id: data.id || data._id });
@@ -896,7 +928,7 @@ export default function App() {
     } finally {
       setPublishing(false);
     }
-  }, [htmlContent, apiToken, collectionId, metaTitle, slug, seoTitle, metaDesc, excerpt]);
+  }, [htmlContent, apiToken, collectionId, metaTitle, slug, seoTitle, metaDesc, excerpt, fieldMap]);
 
   /* ── Navigation guard ── */
 
@@ -1470,6 +1502,17 @@ export default function App() {
               </div>
             )}
 
+            {apiToken && collectionId && !fieldMap.body && (
+              <div style={{ ...s.card, borderColor: '#f59e0b40', background: 'rgba(245,158,11,0.05)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#f59e0b', fontSize: 14 }}>
+                  <AlertTriangle size={18} />
+                  <span>
+                    <strong>Field mapping not configured.</strong> Open Settings, click "Fetch Fields", and map your collection fields.
+                  </span>
+                </div>
+              </div>
+            )}
+
             {!publishResult && (
               <div style={{ textAlign: 'center', marginTop: 8 }}>
                 <button
@@ -1496,9 +1539,9 @@ export default function App() {
               <div style={s.errorBox}>
                 <AlertTriangle size={40} color="#ef4444" />
                 <div style={{ fontSize: 18, fontWeight: 700, marginTop: 12, color: '#ef4444' }}>Publish Failed</div>
-                <div style={{ fontSize: 13, color: TEXT_DIM, marginTop: 8, fontFamily: FONT_MONO }}>
+                <pre style={{ fontSize: 12, color: TEXT_DIM, marginTop: 8, fontFamily: FONT_MONO, whiteSpace: 'pre-wrap', wordBreak: 'break-word', textAlign: 'left', maxHeight: 200, overflow: 'auto' }}>
                   {publishResult.error}
-                </div>
+                </pre>
               </div>
             )}
           </>
@@ -1552,18 +1595,68 @@ export default function App() {
               />
             </div>
 
-            <div>
+            <div style={{ marginBottom: 20 }}>
               <label style={s.label}>Blog Collection ID</label>
-              <input
-                type="text"
-                style={{ ...s.input, fontFamily: FONT_MONO }}
-                value={collectionId}
-                onChange={(e) => setCollectionId(e.target.value)}
-                placeholder="e.g. 6123abc..."
-                onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                onBlur={(e) => { e.target.style.borderColor = BORDER; }}
-              />
+              <div style={{ display: 'flex', gap: 10 }}>
+                <input
+                  type="text"
+                  style={{ ...s.input, flex: 1, fontFamily: FONT_MONO }}
+                  value={collectionId}
+                  onChange={(e) => setCollectionId(e.target.value)}
+                  placeholder="e.g. 6123abc..."
+                  onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
+                  onBlur={(e) => { e.target.style.borderColor = BORDER; }}
+                />
+                <button
+                  style={s.btn(true, fieldsLoading || !apiToken || !collectionId)}
+                  disabled={fieldsLoading || !apiToken || !collectionId}
+                  onClick={fetchCollectionFields}
+                >
+                  <RefreshCw size={14} style={fieldsLoading ? { animation: 'spin 1s linear infinite' } : {}} />
+                  {fieldsLoading ? 'Loading...' : 'Fetch Fields'}
+                </button>
+              </div>
+              {fieldsError && (
+                <div style={{ marginTop: 6, color: '#ef4444', fontSize: 12 }}>{fieldsError}</div>
+              )}
             </div>
+
+            {collectionFields.length > 0 && (
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ ...s.label, marginBottom: 12 }}>Field Mapping</label>
+                <p style={{ fontSize: 12, color: TEXT_DIM, marginBottom: 12 }}>
+                  Map your Webflow collection fields to ShipIt data. Select the matching field slug for each.
+                </p>
+                {[
+                  { key: 'body', label: 'Post Body (Rich Text)', type: 'RichText' },
+                  { key: 'metaTitle', label: 'Meta Title', type: 'PlainText' },
+                  { key: 'metaDesc', label: 'Meta Description', type: 'PlainText' },
+                  { key: 'excerpt', label: 'Post Summary / Excerpt', type: 'PlainText' },
+                ].map(({ key, label, type }) => (
+                  <div key={key} style={{ marginBottom: 12 }}>
+                    <label style={{ fontSize: 12, color: TEXT_DIM, display: 'block', marginBottom: 4 }}>{label}</label>
+                    <select
+                      style={{
+                        ...s.input,
+                        cursor: 'pointer',
+                        appearance: 'auto',
+                      }}
+                      value={fieldMap[key] || ''}
+                      onChange={(e) => setFieldMap((prev) => ({ ...prev, [key]: e.target.value }))}
+                    >
+                      <option value="">— skip —</option>
+                      {collectionFields
+                        .filter((f) => f.slug !== 'name' && f.slug !== 'slug')
+                        .map((f) => (
+                          <option key={f.id || f.slug} value={f.slug}>
+                            {f.displayName || f.slug} ({f.type})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end' }}>
               <button style={s.btn(true, false)} onClick={() => setShowSettings(false)}>
