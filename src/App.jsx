@@ -235,6 +235,23 @@ function sanitizeListsForWebflow(html) {
   return doc.body.innerHTML;
 }
 
+function stripDataUrlImages(html) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  doc.querySelectorAll('img').forEach((img) => {
+    const src = img.getAttribute('src') || '';
+    if (src.startsWith('data:')) {
+      // Replace data URL with a placeholder — Webflow can't use base64 images.
+      // Keep alt text so user knows where to add the image in Webflow.
+      const alt = img.getAttribute('alt') || 'image';
+      const placeholder = doc.createElement('p');
+      placeholder.innerHTML = `<strong>[Image: ${alt}]</strong>`;
+      img.parentElement?.replaceChild(placeholder, img);
+    }
+  });
+  return doc.body.innerHTML;
+}
+
 function formatBytes(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
@@ -905,9 +922,8 @@ export default function App() {
   const handlePublish = useCallback(async () => {
     setPublishing(true);
     setPublishResult(null);
-    const finalHtml = sanitizeListsForWebflow(
-      previewRef.current ? previewRef.current.innerHTML : htmlContent
-    );
+    const rawHtml = previewRef.current ? previewRef.current.innerHTML : htmlContent;
+    const finalHtml = stripDataUrlImages(sanitizeListsForWebflow(rawHtml));
 
     // Build fieldData using mapped field slugs
     const fieldData = { name: metaTitle, slug };
