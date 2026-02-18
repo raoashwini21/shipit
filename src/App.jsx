@@ -690,16 +690,19 @@ export default function App() {
   const [fieldsLoading, setFieldsLoading] = useState(false);
   const [fieldsError, setFieldsError] = useState('');
   const [fieldMap, setFieldMap] = useState(() => {
+    const defaults = { body: 'post-body', metaTitle: 'meta-title', metaDesc: 'meta-description', excerpt: 'excerpt' };
     try {
       const saved = JSON.parse(localStorage.getItem('shipit_fieldmap') || '{}');
+      // Migrate stale 'post-summary' → 'excerpt'
+      if (saved.excerpt === 'post-summary') saved.excerpt = 'excerpt';
       return {
-        body: saved.body || 'post-body',
-        metaTitle: saved.metaTitle || 'meta-title',
-        metaDesc: saved.metaDesc || 'meta-description',
-        excerpt: saved.excerpt || 'excerpt',
+        body: saved.body || defaults.body,
+        metaTitle: saved.metaTitle || defaults.metaTitle,
+        metaDesc: saved.metaDesc || defaults.metaDesc,
+        excerpt: saved.excerpt || defaults.excerpt,
       };
     } catch {
-      return { body: 'post-body', metaTitle: 'meta-title', metaDesc: 'meta-description', excerpt: 'excerpt' };
+      return defaults;
     }
   });
 
