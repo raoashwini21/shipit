@@ -235,6 +235,16 @@ function sanitizeListsForWebflow(html) {
   return doc.body.innerHTML;
 }
 
+function lookupAlt(altTexts, imageName) {
+  if (!altTexts || !imageName) return null;
+  // Exact match: altTexts["hero.webp"] for image "hero.webp"
+  if (altTexts[imageName]) return altTexts[imageName];
+  // Base name match: altTexts["hero"] for image "hero.webp"
+  const base = imageName.replace(/\.[^.]+$/, '');
+  if (base && altTexts[base]) return altTexts[base];
+  return null;
+}
+
 async function uploadDataUrlImages(html, { siteId, apiToken, images, altTexts, onProgress }) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, 'text/html');
@@ -250,7 +260,7 @@ async function uploadDataUrlImages(html, { siteId, apiToken, images, altTexts, o
       if (imgIdx < images.length) {
         const imgData = images[imgIdx];
         img.setAttribute('src', imgData.dataUrl);
-        const alt = (altTexts && altTexts[imgData.name]) || imgData.name;
+        const alt = lookupAlt(altTexts, imgData.name) || imgData.name;
         img.setAttribute('alt', alt);
         imgIdx++;
       }
@@ -261,7 +271,7 @@ async function uploadDataUrlImages(html, { siteId, apiToken, images, altTexts, o
       const imgData = images[imgIdx];
       const imgEl = doc.createElement('img');
       imgEl.setAttribute('src', imgData.dataUrl);
-      const alt = (altTexts && altTexts[imgData.name]) || imgData.name;
+      const alt = lookupAlt(altTexts, imgData.name) || imgData.name;
       imgEl.setAttribute('alt', alt);
       imgEl.style.maxWidth = '100%';
       const p = doc.createElement('p');
@@ -977,7 +987,7 @@ export default function App() {
       if (imgIdx < images.length) {
         const imgData = images[imgIdx];
         img.setAttribute('src', imgData.dataUrl);
-        const alt = altTexts[imgData.name] || imgData.name;
+        const alt = lookupAlt(altTexts, imgData.name) || imgData.name;
         img.setAttribute('alt', alt);
         imgIdx++;
       }
@@ -988,7 +998,7 @@ export default function App() {
       const imgData = images[imgIdx];
       const imgEl = doc.createElement('img');
       imgEl.setAttribute('src', imgData.dataUrl);
-      const alt = altTexts[imgData.name] || imgData.name;
+      const alt = lookupAlt(altTexts, imgData.name) || imgData.name;
       imgEl.setAttribute('alt', alt);
       imgEl.style.maxWidth = '100%';
       const p = doc.createElement('p');
@@ -1304,24 +1314,24 @@ export default function App() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                   <label style={{ ...s.label, marginBottom: 0 }}>Image &amp; Alt Text Mapping</label>
                   <span style={{ fontSize: 12, color: TEXT_DIM }}>
-                    {Object.keys(altTexts).filter((k) => images.some((img) => img.name === k)).length}/{images.length} matched
+                    {images.filter((img) => !!lookupAlt(altTexts, img.name)).length}/{images.length} matched
                   </span>
                 </div>
                 <div style={{ ...s.imgGrid }}>
                   {images.map((img, i) => {
-                    const hasAlt = !!altTexts[img.name];
+                    const matchedAlt = lookupAlt(altTexts, img.name);
                     return (
                       <div key={i} style={s.imgCard}>
                         <img src={img.dataUrl} alt={img.name} style={s.imgThumb} />
-                        {hasAlt && (
+                        {matchedAlt && (
                           <div style={{ position: 'absolute', top: 4, left: 4 }}>
                             <CheckCircle2 size={18} color="#22c55e" />
                           </div>
                         )}
                         <div style={s.imgInfo}>
                           {img.name}
-                          {hasAlt && (
-                            <div style={{ color: '#22c55e', marginTop: 2, fontSize: 10 }}>{altTexts[img.name]}</div>
+                          {matchedAlt && (
+                            <div style={{ color: '#22c55e', marginTop: 2, fontSize: 10 }}>{matchedAlt}</div>
                           )}
                         </div>
                       </div>
