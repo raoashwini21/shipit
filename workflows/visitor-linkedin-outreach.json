@@ -1,0 +1,453 @@
+{
+  "name": "Visitor Identified → LinkedIn Voice Note (Any Page)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "visitor-identified",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "node_webhook_visitor",
+      "name": "Visitor Identified Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 400],
+      "notes": "Compatible with any de-anonymization tool that fires a webhook on visitor identification:\n  • Salesbox AI: Settings → Integrations → Webhooks → Trigger: 'Visitor Identified'\n  • Clearbit Reveal: Webhooks → Event: 'company.identified'\n  • Albacross: API Integrations → Webhook\n  • Leadfeeder: Webhooks (via Zapier or native)\n  • RB2B: Webhook → 'Person Identified'\n\nPaste this webhook URL into whichever tool you use. No page-level filtering needed here — customise the 'Page Filter' node below."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────\n// NODE: Parse Visitor Payload\n//\n// Normalises payloads from multiple de-anonymisation tools:\n//   Salesbox AI, RB2B, Clearbit Reveal, Albacross, Leadfeeder, Koala, etc.\n//\n// Expected shape (Salesbox AI):\n// {\n//   event: 'visitor.identified',\n//   visitor: {\n//     id, identified_at,\n//     contact:  { first_name, last_name, email, linkedin_url, job_title, location },\n//     company:  { name, domain, employee_count, industry, funding_stage },\n//     session:  { page_url, page_title, referrer, started_at, duration_seconds },\n//     intent_score: 0-100,\n//     intent_signals: ['pricing_page', ...]\n//   }\n// }\n//\n// Also handles RB2B ({ person: {...} }), Clearbit ({ company: {...}, person: {...} })\n// and generic flat payloads.\n// ─────────────────────────────────────────────────────\nconst body = $input.first().json;\n\nconst raw     = body.visitor || body;\nconst contact = raw.contact  || raw.person  || raw.profile || body.person || {};\nconst company = raw.company  || raw.organization || body.company || {};\nconst session = raw.session  || raw.page    || raw.pageView || {};\n\n// ── Resolve LinkedIn URL from any tool's schema ──────\nconst linkedInUrl =\n  contact.linkedin_url  ||\n  contact.linkedInUrl   ||\n  contact.linkedin      ||\n  contact.linkedinUrl   ||\n  raw.linkedin_url      ||\n  '';\n\nconst visitor = {\n  // Source tool identity (useful for routing logic downstream)\n  sourceEvent:    body.event || body.type || 'visitor.identified',\n  sourceTool:     body.source || body.integration || 'unknown',\n\n  // Visitor / contact fields\n  visitorId:      raw.id || raw.visitor_id || '',\n  firstName:      contact.first_name  || contact.firstName  || '',\n  lastName:       contact.last_name   || contact.lastName   || '',\n  fullName:       contact.full_name   || contact.name       ||\n                  `${contact.first_name || ''} ${contact.last_name || ''}`.trim(),\n  email:          contact.email       || '',\n  linkedInUrl,\n  linkedInId:     contact.linkedin_id  || contact.linkedInId  || '',\n  title:          contact.job_title   || contact.title       || contact.jobTitle || '',\n  location:       contact.location    || contact.city        || '',\n\n  // Company fields\n  companyName:    company.name        || contact.company    || '',\n  companyDomain:  company.domain      || company.website    || '',\n  companySize:    company.employee_count || company.employeeCount || company.headcount || company.size || '',\n  industry:       company.industry    || '',\n  fundingStage:   company.funding_stage || company.fundingStage || '',\n\n  // Session / page fields\n  pageUrl:        session.page_url    || session.url        || body.url   || raw.page_url || '',\n  pageTitle:      session.page_title  || session.title      || body.title || raw.page_title || '',\n  referrer:       session.referrer    || '',\n  sessionDuration: session.duration_seconds || session.durationSeconds || 0,\n  visitedAt:      raw.identified_at  || session.started_at ||\n                  body.timestamp     || new Date().toISOString(),\n\n  // Intent fields (Salesbox AI / Koala / common)\n  intentScore:    raw.intent_score   || raw.intentScore    || 0,\n  intentSignals:  (raw.intent_signals || raw.intentSignals || []).join(', '),\n\n  _raw: body\n};\n\nif (!visitor.linkedInUrl && !visitor.email) {\n  throw new Error('SKIP: No LinkedIn URL or email found — cannot reach out.');\n}\n\nif (!visitor.firstName) {\n  visitor.firstName = 'there';\n}\n\nreturn [{ json: visitor }];"
+      },
+      "id": "node_parse_visitor",
+      "name": "Parse Visitor Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "filter_pricing",
+              "leftValue": "={{ $json.pageUrl }}",
+              "rightValue": "pricing",
+              "operator": { "type": "string", "operation": "contains" }
+            },
+            {
+              "id": "filter_demo",
+              "leftValue": "={{ $json.pageUrl }}",
+              "rightValue": "demo",
+              "operator": { "type": "string", "operation": "contains" }
+            },
+            {
+              "id": "filter_plans",
+              "leftValue": "={{ $json.pageUrl }}",
+              "rightValue": "plans",
+              "operator": { "type": "string", "operation": "contains" }
+            },
+            {
+              "id": "filter_trial",
+              "leftValue": "={{ $json.pageUrl }}",
+              "rightValue": "trial",
+              "operator": { "type": "string", "operation": "contains" }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "node_filter_page",
+      "name": "Page Filter (Customise Me)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [640, 400],
+      "notes": "────────────────────────────────────────\nCUSTOMISE THIS NODE for your use case:\n\n• Add / remove conditions freely.\n  Each condition checks pageUrl contains a keyword.\n• The combinator is OR — any match proceeds.\n• Common patterns to use:\n    'pricing'  → /pricing, /pricing-plans\n    'demo'     → /book-demo, /request-demo\n    'plans'    → /plans, /compare-plans\n    'contact'  → /contact-sales\n    'checkout' → /checkout\n    'upgrade'  → /upgrade\n\n• To process ALL visitors regardless of page,\n  delete all conditions and set combinator to OR\n  (empty OR = always true). Or bypass this node\n  entirely by connecting Parse directly to Apollo.\n────────────────────────────────────────"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'ignored', reason: 'Page not in filter list', page: $json.pageUrl }) }}",
+        "options": {}
+      },
+      "id": "node_stop_not_matched",
+      "name": "Stop (Page Not Matched)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [860, 560]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apollo.io/v1/people/match",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Cache-Control", "value": "no-cache" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"first_name\":        \"{{ $json.firstName }}\",\n  \"last_name\":         \"{{ $json.lastName }}\",\n  \"email\":             \"{{ $json.email }}\",\n  \"linkedin_url\":      \"{{ $json.linkedInUrl }}\",\n  \"organization_name\": \"{{ $json.companyName }}\",\n  \"domain\":            \"{{ $json.companyDomain }}\",\n  \"reveal_personal_emails\": true,\n  \"reveal_phone_number\": false\n}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "node_apollo_enrich",
+      "name": "Apollo: Enrich Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [860, 360],
+      "credentials": { "httpHeaderAuth": { "id": "apollo_api_cred", "name": "Apollo API Key" } },
+      "notes": "Credential setup: HTTP Header Auth\n  Header Name  → x-api-key\n  Header Value → your Apollo.io API key\n  (Apollo v1 accepts key via x-api-key header or body api_key field)\n\nEndpoint: POST https://api.apollo.io/v1/people/match\nDocs: https://apolloio.github.io/apollo-api-docs/?shell#people-enrichment"
+    },
+    {
+      "parameters": {
+        "jsCode": "const visitor  = $('Page Filter (Customise Me)').first().json;\nconst apolloRaw = $input.first().json;\nconst person   = apolloRaw?.person || {};\nconst org      = apolloRaw?.organization || {};\n\nconst enriched = {\n  ...visitor,\n  firstName:      person.first_name    || visitor.firstName,\n  lastName:       person.last_name     || visitor.lastName,\n  fullName:       person.name          || visitor.fullName,\n  email:          person.email         || person.personal_emails?.[0] || visitor.email,\n  linkedInUrl:    person.linkedin_url  || visitor.linkedInUrl,\n  title:          person.title         || visitor.title,\n  seniorityLevel: person.seniority     || '',\n  departments:    (person.departments  || []).join(', '),\n  companyName:    org.name             || visitor.companyName,\n  companyDomain:  org.primary_domain   || visitor.companyDomain,\n  companySize:    org.num_employees    || visitor.companySize,\n  industry:       org.industry         || visitor.industry,\n  fundingStage:   org.latest_funding_stage || visitor.fundingStage,\n  apolloId:       person.id            || '',\n};\n\n// ── Build contextual identifiers ─────────────────────\nconst companyCtx  = enriched.companyName ? ` at ${enriched.companyName}` : '';\nconst titleCtx    = enriched.title ? `, ${enriched.title}${companyCtx}` : companyCtx;\nconst pageName    = enriched.pageTitle || enriched.pageUrl.split('/').filter(Boolean).pop() || 'our site';\n\n// ── Personalised outreach scripts (generic, page-aware) ──\nenriched.voiceNoteScript =\n  `Hey ${enriched.firstName}${titleCtx} — I noticed you were checking out ${pageName} today. ` +\n  `I'd love to quickly walk you through how teams like yours are using us — I can keep it to 15 minutes and make it worth your while. Would that be useful?`;\n\nenriched.connectionMessage =\n  `Hi ${enriched.firstName}, I saw you were exploring ${pageName} — thought it was worth connecting in case you had any questions or wanted some context. No agenda, just happy to help.`;\n\nenriched.followUpMessage =\n  `Hey ${enriched.firstName} — following up on my voice note from yesterday. ` +\n  `Would a 15-min call this week make sense? Happy to tailor the conversation to what matters most for ${enriched.companyName || 'your team'}.`;\n\nreturn [{ json: enriched }];"
+      },
+      "id": "node_build_message",
+      "name": "Build Personalised Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 360]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.boomtechinc.com/api/add-from-csv?linkedinAccountUuid={{ $vars.SALESROBOT_LINKEDIN_ACCOUNT_UUID }}&campaignUuid={{ $vars.SALESROBOT_VOICE_NOTE_CAMPAIGN_UUID }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"prospectData\": [\n    { \"name\": \"profileUrl\",   \"values\": [\"{{ $json.linkedInUrl }}\"] },\n    { \"name\": \"firstName\",    \"values\": [\"{{ $json.firstName }}\"] },\n    { \"name\": \"lastName\",     \"values\": [\"{{ $json.lastName }}\"] },\n    { \"name\": \"jobTitle\",     \"values\": [\"{{ $json.title }}\"] },\n    { \"name\": \"companyName\",  \"values\": [\"{{ $json.companyName }}\"] },\n    { \"name\": \"email\",        \"values\": [\"{{ $json.email }}\"] },\n    { \"name\": \"custom1\",      \"values\": [\"{{ $json.voiceNoteScript }}\"] },\n    { \"name\": \"custom2\",      \"values\": [\"{{ $json.pageUrl }}\"] },\n    { \"name\": \"custom3\",      \"values\": [\"{{ $json.intentScore }}\"] }\n  ],\n  \"dontAddIfInAnotherLinkedinAccountForMyUser\": true\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "node_salesrobot_voice",
+      "name": "SalesRobot: Add to Voice Note Campaign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1300, 280],
+      "credentials": { "httpHeaderAuth": { "id": "salesrobot_cred", "name": "SalesRobot API Key" } },
+      "notes": "Credential: HTTP Header Auth\n  Header Name  → X-API-KEY\n  Header Value → key from app.salesrobot.co → Settings → API Key\n\nEndpoint: POST https://api.boomtechinc.com/api/add-from-csv\n  (api.boomtechinc.com is SalesRobot's API domain)\nQuery params (set as n8n Variables):\n  SALESROBOT_LINKEDIN_ACCOUNT_UUID  — LinkedIn account UUID from SalesRobot\n  SALESROBOT_VOICE_NOTE_CAMPAIGN_UUID — pre-created voice-note campaign UUID\n\nThe campaign must already exist in SalesRobot with a voice note step.\nDocs: https://help.salesrobot.co/api"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/search",
+        "authentication": "oAuth2",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"filterGroups\": [\n    { \"filters\": [{ \"propertyName\": \"email\", \"operator\": \"EQ\", \"value\": \"{{ $json.email }}\" }] },\n    { \"filters\": [{ \"propertyName\": \"hs_linkedin_url\", \"operator\": \"EQ\", \"value\": \"{{ $json.linkedInUrl }}\" }] }\n  ],\n  \"properties\": [\"email\", \"firstname\", \"lastname\", \"hs_linkedin_url\", \"hs_object_id\", \"lifecyclestage\", \"meetings_booked\", \"num_associated_deals\"]\n}",
+        "options": {}
+      },
+      "id": "node_hubspot_search",
+      "name": "HubSpot: Search Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1300, 460],
+      "credentials": { "oAuth2Api": { "id": "hubspot_oauth", "name": "HubSpot OAuth2" } },
+      "notes": "Searches by email OR LinkedIn URL (filterGroups = OR between groups).\nEndpoint: POST https://api.hubapi.com/crm/v3/objects/contacts/search\nDocs: https://developers.hubspot.com/docs/api/crm/search"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "contact_exists",
+              "leftValue": "={{ $json.total }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node_contact_exists",
+      "name": "Contact Exists in HubSpot?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1520, 460]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts",
+        "authentication": "oAuth2",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"properties\": {\n    \"firstname\":                   \"{{ $('Build Personalised Messages').first().json.firstName }}\",\n    \"lastname\":                    \"{{ $('Build Personalised Messages').first().json.lastName }}\",\n    \"email\":                       \"{{ $('Build Personalised Messages').first().json.email }}\",\n    \"hs_linkedin_url\":             \"{{ $('Build Personalised Messages').first().json.linkedInUrl }}\",\n    \"jobtitle\":                    \"{{ $('Build Personalised Messages').first().json.title }}\",\n    \"company\":                     \"{{ $('Build Personalised Messages').first().json.companyName }}\",\n    \"industry\":                    \"{{ $('Build Personalised Messages').first().json.industry }}\",\n    \"lifecyclestage\":              \"lead\",\n    \"hs_lead_status\":              \"NEW\",\n    \"lead_source\":                 \"Visitor De-anonymisation\",\n    \"visitor_identified_at\":       \"{{ $('Build Personalised Messages').first().json.visitedAt }}\",\n    \"identified_page_url\":         \"{{ $('Build Personalised Messages').first().json.pageUrl }}\",\n    \"linkedin_voice_note_sent\":    \"true\",\n    \"voice_note_sent_at\":          \"{{ new Date().toISOString() }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "node_hubspot_create",
+      "name": "HubSpot: Create Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1740, 380],
+      "credentials": { "oAuth2Api": { "id": "hubspot_oauth", "name": "HubSpot OAuth2" } },
+      "notes": "Creates a new contact.\nEndpoint: POST https://api.hubapi.com/crm/v3/objects/contacts\nNote: visitor_identified_at, identified_page_url, linkedin_voice_note_sent,\nvoice_note_sent_at are custom properties — create them in HubSpot under\nContacts → Properties before activating this workflow."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.hubapi.com/crm/v3/objects/contacts/{{ $('HubSpot: Search Contact').first().json.results[0].id }}",
+        "authentication": "oAuth2",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"properties\": {\n    \"visitor_identified_at\":    \"{{ $('Build Personalised Messages').first().json.visitedAt }}\",\n    \"identified_page_url\":     \"{{ $('Build Personalised Messages').first().json.pageUrl }}\",\n    \"linkedin_voice_note_sent\": \"true\",\n    \"voice_note_sent_at\":      \"{{ new Date().toISOString() }}\",\n    \"hs_lead_status\":          \"IN_PROGRESS\"\n  }\n}",
+        "options": {}
+      },
+      "id": "node_hubspot_update",
+      "name": "HubSpot: Update Existing Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1740, 540],
+      "credentials": { "oAuth2Api": { "id": "hubspot_oauth", "name": "HubSpot OAuth2" } },
+      "notes": "Updates existing contact by HubSpot ID.\nEndpoint: PATCH https://api.hubapi.com/crm/v3/objects/contacts/{id}\nDocs: https://developers.hubspot.com/docs/api/crm/contacts"
+    },
+    {
+      "parameters": {
+        "jsCode": "let contactId;\nlet isNew = false;\n\ntry {\n  const created = $('HubSpot: Create Contact').first().json;\n  if (created?.id) { contactId = created.id; isNew = true; }\n} catch (e) {}\n\nif (!contactId) {\n  try {\n    const search = $('HubSpot: Search Contact').first().json;\n    contactId = search?.results?.[0]?.id;\n  } catch (e) {}\n}\n\nconst visitor = $('Build Personalised Messages').first().json;\nreturn [{ json: { ...visitor, hubspotContactId: contactId || null, isNewContact: isNew } }];"
+      },
+      "id": "node_resolve_contact_id",
+      "name": "Resolve HubSpot Contact ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1960, 460]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/notes",
+        "authentication": "oAuth2",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"properties\": {\n    \"hs_note_body\": \"[Auto-Outreach] LinkedIn voice note sent via SalesRobot.\\n\\nTrigger: Visitor identified at {{ $json.visitedAt }}\\nPage visited: {{ $json.pageUrl }}\\nPage title: {{ $json.pageTitle }}\\nIntent Score: {{ $json.intentScore }}/100\\nSignals: {{ $json.intentSignals }}\\nSession duration: {{ $json.sessionDuration }}s\\nReferrer: {{ $json.referrer }}\\n\\nVoice note script sent:\\n{{ $json.voiceNoteScript }}\\n\\nNext: 24hr text follow-up queued if no response.\",\n    \"hs_timestamp\": \"={{ Date.now() }}\"\n  },\n  \"associations\": [\n    {\n      \"to\": { \"id\": \"={{ $json.hubspotContactId }}\" },\n      \"types\": [{ \"associationCategory\": \"HUBSPOT_DEFINED\", \"associationTypeId\": 202 }]\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "node_hubspot_note",
+      "name": "HubSpot: Log Activity Note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2180, 460],
+      "credentials": { "oAuth2Api": { "id": "hubspot_oauth", "name": "HubSpot OAuth2" } },
+      "notes": "Creates a note associated with the contact (associationTypeId 202 = note→contact).\nEndpoint: POST https://api.hubapi.com/crm/v3/objects/notes\nDocs: https://developers.hubspot.com/docs/api/crm/notes"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "channel": "={{ $vars.SLACK_AE_CHANNEL_ID }}",
+        "text": "=:zap: *Visitor Identified — LinkedIn Outreach Queued*\n\n*Who:* {{ $json.fullName }} — {{ $json.title }} @ {{ $json.companyName }}\n*LinkedIn:* {{ $json.linkedInUrl }}\n*Email:* {{ $json.email }}\n*Industry:* {{ $json.industry }}  |  *Size:* {{ $json.companySize }}\n*Seniority:* {{ $json.seniorityLevel }}\n\n*Page visited:* {{ $json.pageUrl }}\n*Page title:* {{ $json.pageTitle }}\n*Session:* {{ $json.sessionDuration }}s  |  *Referrer:* {{ $json.referrer || 'direct' }}\n*Visited at:* {{ $json.visitedAt }}\n\n*Intent Score:* {{ $json.intentScore }}/100\n*Intent Signals:* {{ $json.intentSignals || 'n/a' }}\n*Source tool:* {{ $json.sourceTool }}\n\n*Action:* LinkedIn voice note queued via SalesRobot :microphone:\n*HubSpot:* <https://app.hubspot.com/contacts/{{ $vars.HUBSPOT_PORTAL_ID }}/contact/{{ $json.hubspotContactId }}|View Contact>\n\n*Script sent:*\n> {{ $json.voiceNoteScript }}\n\n:hourglass_flowing_sand: Text follow-up queued in 24hrs if no reply.",
+        "otherOptions": { "unfurlLinks": false, "unfurlMedia": false }
+      },
+      "id": "node_slack_notify",
+      "name": "Slack: Notify AE",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [2400, 460],
+      "credentials": { "slackOAuth2Api": { "id": "slack_oauth", "name": "Slack OAuth2" } },
+      "notes": "Set these in n8n Variables:\n  SLACK_AE_CHANNEL_ID  — Slack channel ID (e.g. C0123456789)\n  HUBSPOT_PORTAL_ID    — your HubSpot portal/account ID"
+    },
+    {
+      "parameters": { "amount": 24, "unit": "hours" },
+      "id": "node_wait_24h",
+      "name": "Wait 24 Hours",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [2620, 460]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.hubapi.com/crm/v3/objects/contacts/{{ $json.hubspotContactId }}?properties=meetings_booked,hs_lead_status,num_associated_deals",
+        "authentication": "oAuth2",
+        "options": {}
+      },
+      "id": "node_check_meeting",
+      "name": "HubSpot: Check Meeting Booked",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2840, 460],
+      "credentials": { "oAuth2Api": { "id": "hubspot_oauth", "name": "HubSpot OAuth2" } },
+      "notes": "Endpoint: GET https://api.hubapi.com/crm/v3/objects/contacts/{id}\nReturns current values of meetings_booked and num_associated_deals."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "meeting_booked_check",
+              "leftValue": "={{ $json.properties.meetings_booked }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            },
+            {
+              "id": "deal_exists_check",
+              "leftValue": "={{ $json.properties.num_associated_deals }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "node_meeting_booked",
+      "name": "Meeting Already Booked?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3060, 460]
+    },
+    {
+      "parameters": {},
+      "id": "node_stop_booked",
+      "name": "Stop (Meeting / Deal Exists)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [3280, 360],
+      "notes": "Meeting booked or deal already exists — skip follow-up to avoid over-messaging."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.boomtechinc.com/api/add-from-csv?linkedinAccountUuid={{ $vars.SALESROBOT_LINKEDIN_ACCOUNT_UUID }}&campaignUuid={{ $vars.SALESROBOT_FOLLOWUP_CAMPAIGN_UUID }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"prospectData\": [\n    { \"name\": \"profileUrl\",  \"values\": [\"{{ $('Build Personalised Messages').first().json.linkedInUrl }}\"] },\n    { \"name\": \"firstName\",   \"values\": [\"{{ $('Build Personalised Messages').first().json.firstName }}\"] },\n    { \"name\": \"lastName\",    \"values\": [\"{{ $('Build Personalised Messages').first().json.lastName }}\"] },\n    { \"name\": \"jobTitle\",    \"values\": [\"{{ $('Build Personalised Messages').first().json.title }}\"] },\n    { \"name\": \"companyName\", \"values\": [\"{{ $('Build Personalised Messages').first().json.companyName }}\"] },\n    { \"name\": \"email\",       \"values\": [\"{{ $('Build Personalised Messages').first().json.email }}\"] },\n    { \"name\": \"custom1\",     \"values\": [\"{{ $('Build Personalised Messages').first().json.followUpMessage }}\"] }\n  ],\n  \"dontAddIfInAnotherLinkedinAccountForMyUser\": true\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "node_salesrobot_followup",
+      "name": "SalesRobot: Send 24hr Follow-up",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3280, 560],
+      "credentials": { "httpHeaderAuth": { "id": "salesrobot_cred", "name": "SalesRobot API Key" } },
+      "notes": "Same endpoint, different campaign UUID.\nSet SALESROBOT_FOLLOWUP_CAMPAIGN_UUID in n8n Variables.\nThis campaign should contain a text message (not voice note)."
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "channel": "={{ $vars.SLACK_AE_CHANNEL_ID }}",
+        "text": "=:bell: *24hr Follow-up Sent — No Reply Yet*\n\n*Who:* {{ $('Build Personalised Messages').first().json.fullName }} @ {{ $('Build Personalised Messages').first().json.companyName }}\n*LinkedIn:* {{ $('Build Personalised Messages').first().json.linkedInUrl }}\n*Original page visited:* {{ $('Build Personalised Messages').first().json.pageUrl }}\n\n*Action:* LinkedIn text follow-up queued via SalesRobot.\n*HubSpot:* <https://app.hubspot.com/contacts/{{ $vars.HUBSPOT_PORTAL_ID }}/contact/{{ $('Resolve HubSpot Contact ID').first().json.hubspotContactId }}|View Contact>",
+        "otherOptions": { "unfurlLinks": false }
+      },
+      "id": "node_slack_followup",
+      "name": "Slack: Notify Follow-up Sent",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [3500, 560],
+      "credentials": { "slackOAuth2Api": { "id": "slack_oauth", "name": "Slack OAuth2" } }
+    }
+  ],
+  "connections": {
+    "Visitor Identified Webhook": {
+      "main": [[{ "node": "Parse Visitor Payload", "type": "main", "index": 0 }]]
+    },
+    "Parse Visitor Payload": {
+      "main": [[{ "node": "Page Filter (Customise Me)", "type": "main", "index": 0 }]]
+    },
+    "Page Filter (Customise Me)": {
+      "main": [
+        [{ "node": "Apollo: Enrich Contact", "type": "main", "index": 0 }],
+        [{ "node": "Stop (Page Not Matched)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Apollo: Enrich Contact": {
+      "main": [[{ "node": "Build Personalised Messages", "type": "main", "index": 0 }]]
+    },
+    "Build Personalised Messages": {
+      "main": [[
+        { "node": "SalesRobot: Add to Voice Note Campaign", "type": "main", "index": 0 },
+        { "node": "HubSpot: Search Contact", "type": "main", "index": 0 }
+      ]]
+    },
+    "HubSpot: Search Contact": {
+      "main": [[{ "node": "Contact Exists in HubSpot?", "type": "main", "index": 0 }]]
+    },
+    "Contact Exists in HubSpot?": {
+      "main": [
+        [{ "node": "HubSpot: Update Existing Contact", "type": "main", "index": 0 }],
+        [{ "node": "HubSpot: Create Contact", "type": "main", "index": 0 }]
+      ]
+    },
+    "HubSpot: Create Contact": {
+      "main": [[{ "node": "Resolve HubSpot Contact ID", "type": "main", "index": 0 }]]
+    },
+    "HubSpot: Update Existing Contact": {
+      "main": [[{ "node": "Resolve HubSpot Contact ID", "type": "main", "index": 0 }]]
+    },
+    "Resolve HubSpot Contact ID": {
+      "main": [[{ "node": "HubSpot: Log Activity Note", "type": "main", "index": 0 }]]
+    },
+    "HubSpot: Log Activity Note": {
+      "main": [[{ "node": "Slack: Notify AE", "type": "main", "index": 0 }]]
+    },
+    "Slack: Notify AE": {
+      "main": [[{ "node": "Wait 24 Hours", "type": "main", "index": 0 }]]
+    },
+    "Wait 24 Hours": {
+      "main": [[{ "node": "HubSpot: Check Meeting Booked", "type": "main", "index": 0 }]]
+    },
+    "HubSpot: Check Meeting Booked": {
+      "main": [[{ "node": "Meeting Already Booked?", "type": "main", "index": 0 }]]
+    },
+    "Meeting Already Booked?": {
+      "main": [
+        [{ "node": "Stop (Meeting / Deal Exists)", "type": "main", "index": 0 }],
+        [{ "node": "SalesRobot: Send 24hr Follow-up", "type": "main", "index": 0 }]
+      ]
+    },
+    "SalesRobot: Send 24hr Follow-up": {
+      "main": [[{ "node": "Slack: Notify Follow-up Sent", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    { "id": "tag_visitor_outreach", "name": "outbound-automation" },
+    { "id": "tag_linkedin", "name": "linkedin" }
+  ],
+  "triggerCount": 0,
+  "updatedAt": "2026-03-11T00:00:00.000Z",
+  "versionId": "2"
+}
