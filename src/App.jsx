@@ -1,9 +1,9 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
-  Ship, SlidersHorizontal, ArrowLeft, ArrowRight, ScrollText, Images, Captions, SearchCheck, ScanEye, Rocket,
+  Ship, ShipWheel, Sailboat, Compass, Telescope, LifeBuoy, ArrowLeft, ArrowRight, ScrollText, Images, Captions, SearchCheck,
   Link2, FileUp, FolderOpen, Trash2, X, Check, CircleCheck, CircleAlert, TriangleAlert, LoaderCircle, RotateCcw,
   Bold, Italic, Heading1, Heading2, Heading3, Pilcrow, Feather, ImagePlus, WandSparkles, KeyRound, Database,
-  Globe, Hash, Eye, EyeOff, Copy, Sparkles, FileType2, Tag, Quote, MousePointerClick, CloudUpload, Plus, Anchor,
+  Globe, Hash, Eye, EyeOff, Copy, Sparkles, FileType2, Tag, Quote, MousePointerClick, CloudUpload, Anchor,
 } from 'lucide-react';
 import mammoth from 'mammoth';
 import {
@@ -31,19 +31,19 @@ const STEPS = [
     sub: 'Good alt text helps screen readers and search engines. Match it to images by file name.',
   },
   {
-    label: 'Meta', icon: SearchCheck, eyebrow: 'SEO',
+    label: 'Meta', icon: Compass, eyebrow: 'SEO',
     title: <>Polish for <em>search</em></>,
     sub: 'Title, slug and the snippet people see on Google before they ever click.',
   },
   {
-    label: 'Preview', icon: ScanEye, eyebrow: 'Review',
+    label: 'Preview', icon: Telescope, eyebrow: 'Review',
     title: <>The final <em>read-through</em></>,
     sub: 'Everything here is editable. Click a link to change or remove it.',
   },
   {
-    label: 'Publish', icon: Rocket, eyebrow: 'Launch',
+    label: 'Publish', icon: Sailboat, eyebrow: 'Launch',
     title: <>Ship it to <em>Webflow</em></>,
-    sub: 'Images go to the Webflow CDN first, then the post lands in your collection as a draft.',
+    sub: 'Images sail to the Webflow CDN first, then your post docks in the collection as a draft.',
   },
 ];
 
@@ -492,6 +492,12 @@ export default function App() {
 
   return (
     <>
+      <div className="waves" aria-hidden="true">
+        <svg className="w1" viewBox="0 0 2880 220" preserveAspectRatio="none"><path fill="#0b3a5a" d="M0 120 C 240 70 480 70 720 120 S 1200 170 1440 120 S 1920 70 2160 120 S 2640 170 2880 120 V220 H0Z" /></svg>
+        <svg className="w2" viewBox="0 0 2880 220" preserveAspectRatio="none"><path fill="#0d4c66" d="M0 150 C 180 115 360 115 540 150 S 900 185 1080 150 S 1260 115 1440 150 S 1800 185 1980 150 S 2340 115 2520 150 S 2700 185 2880 150 V220 H0Z" /></svg>
+        <svg className="w3" viewBox="0 0 2880 220" preserveAspectRatio="none"><path fill="#0f5f73" d="M0 185 C 240 165 480 165 720 185 S 1200 205 1440 185 S 1920 165 2160 185 S 2640 205 2880 185 V220 H0Z" /></svg>
+      </div>
+
       {/* ── Header ── */}
       <header className="header">
         <div className="brand">
@@ -512,7 +518,7 @@ export default function App() {
             <span className="status-text">{connected ? 'Webflow connected' : 'Not connected'}</span>
           </button>
           <button className="btn btn-sm" onClick={() => setShowSettings(true)}>
-            <SlidersHorizontal size={15} /> Settings
+            <ShipWheel size={15} /> Settings
           </button>
         </div>
       </header>
@@ -568,7 +574,7 @@ export default function App() {
                         onChange={(e) => setDocUrl(e.target.value)}
                       />
                     </div>
-                    <button type="submit" className="btn btn-gold" disabled={contentLoading || !docUrl.trim()}>
+                    <button type="submit" className="btn btn-sea" disabled={contentLoading || !docUrl.trim()}>
                       {contentLoading ? <LoaderCircle size={16} className="spin" /> : <WandSparkles size={16} />}
                       {contentLoading ? 'Fetching…' : 'Import'}
                     </button>
@@ -607,7 +613,7 @@ export default function App() {
                 <div className="card-head">
                   <div className="card-title"><Feather size={17} /> {contentTitle || 'Content loaded'}</div>
                   <div className="row">
-                    {sourceName && <span className="chip gold"><Sparkles size={12} /> {sourceName}</span>}
+                    {sourceName && <span className="chip sea"><Sparkles size={12} /> {sourceName}</span>}
                     <span className="chip"><Database size={12} /> {formatBytes(contentSize)}</span>
                     <span className="chip"><Images size={12} /> {imageCount} image{imageCount === 1 ? '' : 's'}</span>
                   </div>
@@ -700,7 +706,7 @@ export default function App() {
                   {imagesApplied ? (
                     <span className="chip ok"><CircleCheck size={12} /> Applied to post</span>
                   ) : (
-                    <button className="btn btn-sm btn-gold" onClick={applyImages}>
+                    <button className="btn btn-sm btn-sea" onClick={applyImages}>
                       <WandSparkles size={15} /> Apply to post
                     </button>
                   )}
@@ -898,8 +904,8 @@ export default function App() {
 
             {(phase === 'idle' || phase === 'error') && !publishResult?.ok && (
               <div className="launch">
-                <button className="btn btn-gold btn-lg" disabled={!connected} onClick={() => handlePublish()}>
-                  <Rocket size={18} /> {phase === 'error' ? 'Try again' : 'Push as draft'}
+                <button className="btn btn-sea btn-lg" disabled={!connected} onClick={() => handlePublish()}>
+                  <Sailboat size={18} /> {phase === 'error' ? 'Try again' : 'Set sail — push as draft'}
                 </button>
                 <span className="faint">Creates a draft item — nothing goes live until you publish it in Webflow.</span>
               </div>
@@ -909,7 +915,7 @@ export default function App() {
               <div className="card">
                 <div className="card-head">
                   <div className="card-title">
-                    {busy ? <LoaderCircle size={17} className="spin" /> : phase === 'blocked' ? <CircleAlert size={17} /> : <CloudUpload size={17} />}
+                    {busy ? <LifeBuoy size={17} className="spin" /> : phase === 'blocked' ? <CircleAlert size={17} /> : <CloudUpload size={17} />}
                     {phase === 'uploading' && `Uploading images · ${doneUploads}/${uploads.length}`}
                     {phase === 'publishing' && 'Creating your draft in Webflow…'}
                     {phase === 'blocked' && `${failedUploads} image${failedUploads === 1 ? '' : 's'} couldn’t be uploaded`}
@@ -948,7 +954,7 @@ export default function App() {
                     <button className="btn" onClick={() => handlePublish({ skipFailed: true })}>
                       Publish without them
                     </button>
-                    <button className="btn btn-gold" onClick={() => handlePublish()}>
+                    <button className="btn btn-sea" onClick={() => handlePublish()}>
                       <RotateCcw size={15} /> Retry failed
                     </button>
                   </div>
@@ -958,7 +964,7 @@ export default function App() {
 
             {publishResult?.ok && (
               <div className="result ok">
-                <div className="result-icon"><Check size={34} strokeWidth={2.2} /></div>
+                <div className="result-icon"><Anchor size={32} strokeWidth={2} /></div>
                 <div className="result-title">Shipped.</div>
                 <p className="muted mt-8">
                   “{metaTitle}” is waiting as a draft in your Webflow collection
@@ -979,8 +985,8 @@ export default function App() {
                     </button>
                   </div>
                 )}
-                <button className="btn btn-gold mt-16" onClick={startOver} style={{ marginTop: 24 }}>
-                  <Plus size={16} /> Ship another post
+                <button className="btn btn-sea mt-16" onClick={startOver} style={{ marginTop: 24 }}>
+                  <Ship size={16} /> Ship another post
                 </button>
               </div>
             )}
@@ -1009,7 +1015,7 @@ export default function App() {
           <span className="nav-text">{step + 1} of {STEPS.length}</span>
         </div>
         {step < STEPS.length - 1 ? (
-          <button className="btn btn-gold" disabled={!canNext} onClick={() => goTo(step + 1)}>
+          <button className="btn btn-sea" disabled={!canNext} onClick={() => goTo(step + 1)}>
             {step === STEPS.length - 2 ? 'Review & ship' : 'Continue'} <ArrowRight size={16} />
           </button>
         ) : (
@@ -1024,7 +1030,7 @@ export default function App() {
             <button className="btn btn-ghost btn-sm modal-close" onClick={() => setShowSettings(false)} aria-label="Close">
               <X size={18} />
             </button>
-            <h2 className="modal-title"><SlidersHorizontal size={22} /> Settings</h2>
+            <h2 className="modal-title"><ShipWheel size={24} /> Settings</h2>
             <p className="muted">Stored only in this browser.</p>
 
             <div className="modal-section">
@@ -1095,7 +1101,7 @@ export default function App() {
             </div>
 
             <div className="row" style={{ justifyContent: 'flex-end', marginTop: 26 }}>
-              <button className="btn btn-gold" onClick={() => setShowSettings(false)}>
+              <button className="btn btn-sea" onClick={() => setShowSettings(false)}>
                 <Check size={16} /> Done
               </button>
             </div>
