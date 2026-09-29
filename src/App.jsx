@@ -11,6 +11,7 @@ import {
   formatBytes, injectImages,
 } from './lib/html.js';
 import { needsUpload, uploadImage } from './lib/images.js';
+import OceanScene from './OceanScene.jsx';
 
 /* ───────────────────────── constants ───────────────────────── */
 
@@ -492,11 +493,7 @@ export default function App() {
 
   return (
     <>
-      <div className="waves" aria-hidden="true">
-        <svg className="w1" viewBox="0 0 2880 220" preserveAspectRatio="none"><path fill="#0b3a5a" d="M0 120 C 240 70 480 70 720 120 S 1200 170 1440 120 S 1920 70 2160 120 S 2640 170 2880 120 V220 H0Z" /></svg>
-        <svg className="w2" viewBox="0 0 2880 220" preserveAspectRatio="none"><path fill="#0d4c66" d="M0 150 C 180 115 360 115 540 150 S 900 185 1080 150 S 1260 115 1440 150 S 1800 185 1980 150 S 2340 115 2520 150 S 2700 185 2880 150 V220 H0Z" /></svg>
-        <svg className="w3" viewBox="0 0 2880 220" preserveAspectRatio="none"><path fill="#0f5f73" d="M0 185 C 240 165 480 165 720 185 S 1200 205 1440 185 S 1920 165 2160 185 S 2640 205 2880 185 V220 H0Z" /></svg>
-      </div>
+      <OceanScene />
 
       {/* ── Header ── */}
       <header className="header">
@@ -925,6 +922,7 @@ export default function App() {
                 {uploads.length > 0 && (
                   <div className="progress">
                     <span style={{ width: `${((doneUploads + failedUploads) / uploads.length) * 100}%` }} />
+                    <Sailboat className="progress-boat" size={20} style={{ left: `${((doneUploads + failedUploads) / uploads.length) * 100}%` }} />
                   </div>
                 )}
                 {phase === 'blocked' && (
