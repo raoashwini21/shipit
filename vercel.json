@@ -1,3 +1,7 @@
 {
-  "framework": "vite"
+  "framework": "vite",
+  "functions": {
+    "api/upload-image.js": { "maxDuration": 60 },
+    "api/publish.js": { "maxDuration": 30 }
+  }
 }
