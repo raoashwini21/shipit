@@ -1,772 +1,150 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Send, Settings, ChevronLeft, ChevronRight, Upload, Link, Link2, FileText, Image, Eye, Rocket, Check, AlertTriangle, X, Type, Globe, CheckCircle2, FileUp, Trash2, FolderOpen, Bold, Italic, Heading1, Heading2, Heading3, MessageSquareText, RefreshCw } from 'lucide-react';
+import {
+  Ship, SlidersHorizontal, ArrowLeft, ArrowRight, ScrollText, Images, Captions, SearchCheck, ScanEye, Rocket,
+  Link2, FileUp, FolderOpen, Trash2, X, Check, CircleCheck, CircleAlert, TriangleAlert, LoaderCircle, RotateCcw,
+  Bold, Italic, Heading1, Heading2, Heading3, Pilcrow, Feather, ImagePlus, WandSparkles, KeyRound, Database,
+  Globe, Hash, Eye, EyeOff, Copy, Sparkles, FileType2, Tag, Quote, MousePointerClick, CloudUpload, Plus, Anchor,
+} from 'lucide-react';
 import mammoth from 'mammoth';
+import {
+  extractDocId, cleanGoogleHtml, detectTitle, countImages, slugify, sanitizeListsForWebflow, lookupAlt,
+  formatBytes, injectImages,
+} from './lib/html.js';
+import { needsUpload, uploadImage } from './lib/images.js';
 
 /* ───────────────────────── constants ───────────────────────── */
-const ACCENT = '#6366f1';
-const ACCENT_HOVER = '#818cf8';
-const BG = '#0f0f12';
-const SURFACE = '#1a1a20';
-const SURFACE2 = '#25252d';
-const BORDER = '#2e2e38';
-const TEXT = '#e4e4e7';
-const TEXT_DIM = '#9ca3af';
-const FONT_SANS = "'DM Sans', sans-serif";
-const FONT_MONO = "'JetBrains Mono', monospace";
 
 const STEPS = [
-  { label: 'Content', icon: FileText },
-  { label: 'Images', icon: Image },
-  { label: 'Alt Text', icon: MessageSquareText },
-  { label: 'Meta', icon: Type },
-  { label: 'Preview', icon: Eye },
-  { label: 'Publish', icon: Rocket },
+  {
+    label: 'Content', icon: ScrollText, eyebrow: 'Source',
+    title: <>Bring in your <em>draft</em></>,
+    sub: "Paste a Google Doc link or drop in a .docx — we'll tidy up the formatting, lists and links.",
+  },
+  {
+    label: 'Images', icon: Images, eyebrow: 'Visuals',
+    title: <>Gather your <em>visuals</em></>,
+    sub: 'Images are placed in filename order, replacing the images in your doc one by one. Extras go at the end.',
+  },
+  {
+    label: 'Alt Text', icon: Captions, eyebrow: 'Accessibility',
+    title: <>Describe every <em>image</em></>,
+    sub: 'Good alt text helps screen readers and search engines. Match it to images by file name.',
+  },
+  {
+    label: 'Meta', icon: SearchCheck, eyebrow: 'SEO',
+    title: <>Polish for <em>search</em></>,
+    sub: 'Title, slug and the snippet people see on Google before they ever click.',
+  },
+  {
+    label: 'Preview', icon: ScanEye, eyebrow: 'Review',
+    title: <>The final <em>read-through</em></>,
+    sub: 'Everything here is editable. Click a link to change or remove it.',
+  },
+  {
+    label: 'Publish', icon: Rocket, eyebrow: 'Launch',
+    title: <>Ship it to <em>Webflow</em></>,
+    sub: 'Images go to the Webflow CDN first, then the post lands in your collection as a draft.',
+  },
+];
+
+const FIELD_DEFS = [
+  { key: 'body', label: 'Post body (rich text)', placeholder: 'post-body' },
+  { key: 'metaTitle', label: 'Meta title', placeholder: 'meta-title' },
+  { key: 'metaDesc', label: 'Meta description', placeholder: 'meta-description' },
+  { key: 'excerpt', label: 'Excerpt / summary', placeholder: 'excerpt' },
 ];
 
 const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
 
-/* ───────────────────────── helpers ───────────────────────── */
-
-function extractDocId(url) {
-  const m = url.match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
-  return m ? m[1] : null;
+function readFileAsDataUrl(f) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: f.name, dataUrl: reader.result, size: f.size });
+    reader.readAsDataURL(f);
+  });
 }
 
-function cleanGoogleHtml(html) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-
-  // ── Merge Google Docs fragmented lists into properly nested lists ──
-  // Google Docs exports each list item as a separate <ul>/<ol> with classes
-  // like "lst-kix_abc123-0" (level 0), "lst-kix_abc123-1" (level 1), etc.
-  // We merge consecutive same-list-id elements into one nested structure.
-
-  function getListInfo(el) {
-    if (!el || (el.tagName !== 'UL' && el.tagName !== 'OL')) return null;
-    const cls = el.getAttribute('class') || '';
-    // Match lst-kix_XXXX-N or c[0-9] li-bullet-N patterns
-    const kixMatch = cls.match(/lst-(\w+)-(\d+)/);
-    if (kixMatch) return { listId: kixMatch[1], level: parseInt(kixMatch[2]) };
-    // Fallback: detect level from li-bullet-N class on child <li>
-    const li = el.querySelector(':scope > li');
-    if (li) {
-      const liCls = li.getAttribute('class') || '';
-      const bulletMatch = liCls.match(/li-bullet-(\d+)/);
-      if (bulletMatch) return { listId: '_default', level: parseInt(bulletMatch[1]) };
-    }
-    return { listId: '_default', level: 0 };
-  }
-
-  // Collect consecutive list elements into groups
-  const body = doc.body;
-  const children = Array.from(body.children);
-  let i = 0;
-  while (i < children.length) {
-    const el = children[i];
-    const info = getListInfo(el);
-    if (!info) { i++; continue; }
-
-    // Gather all consecutive list elements
-    const group = [{ el, info }];
-    let j = i + 1;
-    while (j < children.length) {
-      const nextInfo = getListInfo(children[j]);
-      if (!nextInfo) break;
-      group.push({ el: children[j], info: nextInfo });
-      j++;
-    }
-
-    if (group.length > 1) {
-      // Build a single nested list from the group
-      const rootTag = group[0].el.tagName.toLowerCase();
-      const rootList = doc.createElement(rootTag);
-      // Stack: array of { list, level }
-      const stack = [{ list: rootList, level: 0 }];
-
-      for (const { el: listEl, info: lInfo } of group) {
-        const items = Array.from(listEl.querySelectorAll(':scope > li'));
-        for (const li of items) {
-          const level = lInfo.level;
-          // Pop stack until we find the right parent level
-          while (stack.length > 1 && stack[stack.length - 1].level >= level) {
-            stack.pop();
-          }
-          const parentList = stack[stack.length - 1].list;
-
-          if (level > stack[stack.length - 1].level) {
-            // Need to nest deeper — create sub-list inside last <li> of parent
-            const lastLi = parentList.querySelector(':scope > li:last-child');
-            if (lastLi) {
-              const subTag = listEl.tagName.toLowerCase();
-              const subList = doc.createElement(subTag);
-              lastLi.appendChild(subList);
-              stack.push({ list: subList, level });
-              subList.appendChild(li);
-            } else {
-              parentList.appendChild(li);
-            }
-          } else {
-            parentList.appendChild(li);
-          }
-        }
-      }
-
-      // Replace the first element with the merged list, remove the rest
-      group[0].el.replaceWith(rootList);
-      for (let k = 1; k < group.length; k++) {
-        group[k].el.remove();
-      }
-
-      // Re-read children since DOM changed
-      i++;
-    } else {
-      i = j;
-    }
-  }
-
-  // Convert bold spans
-  doc.querySelectorAll('span').forEach((span) => {
-    const fw = span.style.fontWeight;
-    if (fw === 'bold' || fw === '700' || parseInt(fw) >= 700) {
-      const strong = doc.createElement('strong');
-      strong.innerHTML = span.innerHTML;
-      span.replaceWith(strong);
-    }
+function readFileAsText(f) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => resolve('');
+    reader.readAsText(f);
   });
-
-  // Convert italic spans
-  doc.querySelectorAll('span').forEach((span) => {
-    if (span.style.fontStyle === 'italic') {
-      const em = doc.createElement('em');
-      em.innerHTML = span.innerHTML;
-      span.replaceWith(em);
-    }
-  });
-
-  // Strip classes and styles from all elements
-  doc.querySelectorAll('*').forEach((el) => {
-    el.removeAttribute('class');
-    el.removeAttribute('style');
-    el.removeAttribute('id');
-  });
-
-  // Unwrap plain spans (no attributes left)
-  doc.querySelectorAll('span').forEach((span) => {
-    if (span.attributes.length === 0) {
-      const frag = doc.createDocumentFragment();
-      while (span.firstChild) frag.appendChild(span.firstChild);
-      span.replaceWith(frag);
-    }
-  });
-
-  // Remove empty <p>
-  doc.querySelectorAll('p').forEach((p) => {
-    if (!p.textContent.trim() && !p.querySelector('img')) {
-      p.remove();
-    }
-  });
-
-  // Set links to target=_blank
-  doc.querySelectorAll('a').forEach((a) => {
-    a.setAttribute('target', '_blank');
-    a.setAttribute('rel', 'noopener noreferrer');
-    // Unwrap Google redirects
-    const href = a.getAttribute('href') || '';
-    const redir = href.match(/google\.com\/url\?.*?url=([^&]+)/);
-    if (redir) {
-      try { a.setAttribute('href', decodeURIComponent(redir[1])); } catch (_) { /* noop */ }
-    }
-  });
-
-  return doc.body.innerHTML;
 }
 
-function detectTitle(html) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-  const h = doc.querySelector('h1, h2');
-  return h ? h.textContent.trim() : '';
-}
+/* ───────────────────────── small components ───────────────────────── */
 
-function countImages(html) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-  return doc.querySelectorAll('img').length;
-}
-
-function slugify(text) {
-  return text
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-function sanitizeListsForWebflow(html) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-
-  // Add roles for accessibility (preserve nested list structure)
-  doc.querySelectorAll('ul, ol').forEach((list) => list.setAttribute('role', 'list'));
-  doc.querySelectorAll('li').forEach((li) => {
-    li.setAttribute('role', 'listitem');
-    // Unwrap <span> inside <li>
-    li.querySelectorAll(':scope > span').forEach((span) => {
-      const frag = doc.createDocumentFragment();
-      while (span.firstChild) frag.appendChild(span.firstChild);
-      span.replaceWith(frag);
-    });
-  });
-
-  // Remove <div> wrappers around lists
-  doc.querySelectorAll('div').forEach((div) => {
-    const children = Array.from(div.children);
-    const hasOnlyLists = children.length > 0 && children.every(
-      (c) => c.tagName === 'UL' || c.tagName === 'OL'
-    );
-    if (hasOnlyLists) {
-      const frag = doc.createDocumentFragment();
-      while (div.firstChild) frag.appendChild(div.firstChild);
-      div.replaceWith(frag);
-    }
-  });
-
-  return doc.body.innerHTML;
-}
-
-function lookupAlt(altTexts, imageName) {
-  if (!altTexts || !imageName) return null;
-  // Exact match: altTexts["hero.webp"] for image "hero.webp"
-  if (altTexts[imageName]) return altTexts[imageName];
-  // Base name match: altTexts["hero"] for image "hero.webp"
-  const base = imageName.replace(/\.[^.]+$/, '');
-  if (base && altTexts[base]) return altTexts[base];
-  return null;
-}
-
-async function uploadDataUrlImages(html, { siteId, apiToken, images, altTexts, onProgress }) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-
-  // Step A: Inject uploaded images + alt texts into the HTML (same logic as replaceImagesInBlog).
-  // This ensures images/alts are always applied even if the user didn't click "Replace Images"
-  // or if the contentEditable DOM was stale.
-  if (images && images.length > 0) {
-    const inlineImgs = doc.querySelectorAll('img');
-    let imgIdx = 0;
-
-    inlineImgs.forEach((img) => {
-      if (imgIdx < images.length) {
-        const imgData = images[imgIdx];
-        img.setAttribute('src', imgData.dataUrl);
-        const alt = lookupAlt(altTexts, imgData.name) || imgData.name;
-        img.setAttribute('alt', alt);
-        imgIdx++;
-      }
-    });
-
-    // Append remaining images at end
-    while (imgIdx < images.length) {
-      const imgData = images[imgIdx];
-      const imgEl = doc.createElement('img');
-      imgEl.setAttribute('src', imgData.dataUrl);
-      const alt = lookupAlt(altTexts, imgData.name) || imgData.name;
-      imgEl.setAttribute('alt', alt);
-      imgEl.style.maxWidth = '100%';
-      const p = doc.createElement('p');
-      p.appendChild(imgEl);
-      doc.body.appendChild(p);
-      imgIdx++;
-    }
-  }
-
-  // Step B: Find all data-URL images and upload to Webflow CDN (or placeholder fallback)
-  const dataImgs = Array.from(doc.querySelectorAll('img')).filter(
-    (img) => (img.getAttribute('src') || '').startsWith('data:')
+function StepHead({ index }) {
+  const st = STEPS[index];
+  const Icon = st.icon;
+  return (
+    <div className="step-head">
+      <div className="step-glyph"><Icon size={26} strokeWidth={1.5} /></div>
+      <div>
+        <div className="eyebrow">Step {String(index + 1).padStart(2, '0')} — {st.eyebrow}</div>
+        <h2 className="step-title">{st.title}</h2>
+        <p className="step-sub">{st.sub}</p>
+      </div>
+    </div>
   );
-
-  if (!dataImgs.length) return doc.body.innerHTML;
-
-  // If no siteId, fall back to placeholder behavior
-  if (!siteId || !apiToken) {
-    dataImgs.forEach((img) => {
-      const alt = img.getAttribute('alt') || 'image';
-      const placeholder = doc.createElement('p');
-      placeholder.innerHTML = `<strong>[Image: ${alt}]</strong>`;
-      img.parentElement?.replaceChild(placeholder, img);
-    });
-    return doc.body.innerHTML;
-  }
-
-  for (let i = 0; i < dataImgs.length; i++) {
-    const img = dataImgs[i];
-    const src = img.getAttribute('src');
-    const alt = img.getAttribute('alt') || `image-${i + 1}`;
-    if (onProgress) onProgress(i + 1, dataImgs.length, alt);
-
-    try {
-      // Parse data URL → base64 + contentType
-      const match = src.match(/^data:([^;]+);base64,(.+)$/);
-      if (!match) continue;
-      const contentType = match[1];
-      const fileBase64 = match[2];
-      const ext = contentType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
-      const fileName = alt.replace(/[^a-zA-Z0-9_-]/g, '_') + '.' + ext;
-
-      const resp = await fetch('/api/upload-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteId, apiToken, fileName, fileBase64, contentType }),
-      });
-
-      const data = await resp.json();
-      if (resp.ok && data.url) {
-        img.setAttribute('src', data.url);
-      } else {
-        // Upload failed — insert placeholder instead of bloating payload
-        const placeholder = doc.createElement('p');
-        placeholder.innerHTML = `<strong>[Image: ${alt} — upload failed]</strong>`;
-        img.parentElement?.replaceChild(placeholder, img);
-      }
-    } catch {
-      const placeholder = doc.createElement('p');
-      placeholder.innerHTML = `<strong>[Image: ${alt} — upload failed]</strong>`;
-      img.parentElement?.replaceChild(placeholder, img);
-    }
-  }
-
-  return doc.body.innerHTML;
 }
 
-function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / 1048576).toFixed(1) + ' MB';
+function Dropzone({ icon, title, sub, onFiles, onClick, accept }) {
+  const Icon = icon;
+  const [over, setOver] = useState(false);
+  return (
+    <div
+      className={`dropzone${over ? ' over' : ''}`}
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
+      onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setOver(false);
+        const files = Array.from(e.dataTransfer.files || []).filter((f) => !accept || accept(f));
+        if (files.length) onFiles(files);
+      }}
+    >
+      <div className="dropzone-icon"><Icon size={22} strokeWidth={1.6} /></div>
+      <div className="dropzone-title">{title}</div>
+      <div className="dropzone-sub">{sub}</div>
+    </div>
+  );
 }
 
-/* ───────────────────────── styles ───────────────────────── */
+function CharField({ label, value, max, children }) {
+  const ratio = value.length / max;
+  const tone = ratio > 1 ? 'over' : ratio > 0.9 ? 'warn' : '';
+  return (
+    <div className="field">
+      <label className="label">
+        <span>{label}</span>
+        <span className={`count ${tone}`}>{value.length} / {max}</span>
+      </label>
+      {children}
+      <div className={`meter ${tone}`}><span style={{ width: `${Math.min(100, ratio * 100)}%` }} /></div>
+    </div>
+  );
+}
 
-const s = {
-  app: {
-    background: BG,
-    minHeight: '100vh',
-    fontFamily: FONT_SANS,
-    color: TEXT,
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  header: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '16px 32px',
-    borderBottom: `1px solid ${BORDER}`,
-    background: SURFACE,
-  },
-  headerLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '14px',
-  },
-  logoBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 10,
-    background: `linear-gradient(135deg, ${ACCENT}, #a855f7)`,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: 700,
-    letterSpacing: '-0.02em',
-    margin: 0,
-    lineHeight: 1.1,
-  },
-  headerSub: {
-    fontSize: 12,
-    color: TEXT_DIM,
-    margin: 0,
-    lineHeight: 1.2,
-  },
-  gearBtn: {
-    background: 'none',
-    border: `1px solid ${BORDER}`,
-    borderRadius: 8,
-    padding: '8px 12px',
-    color: TEXT_DIM,
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    fontSize: 13,
-    fontFamily: FONT_SANS,
-    transition: 'border-color 0.2s, color 0.2s',
-  },
-  stepper: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 0,
-    padding: '24px 32px 0',
-  },
-  stepItem: (active, done) => ({
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '10px 18px',
-    borderRadius: 8,
-    background: active ? SURFACE2 : 'transparent',
-    border: active ? `1px solid ${ACCENT}` : '1px solid transparent',
-    cursor: 'default',
-    transition: 'all 0.2s',
-  }),
-  stepNum: (active, done) => ({
-    width: 28,
-    height: 28,
-    borderRadius: '50%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 13,
-    fontWeight: 600,
-    fontFamily: FONT_MONO,
-    background: done ? ACCENT : active ? ACCENT : SURFACE2,
-    color: done || active ? '#fff' : TEXT_DIM,
-    border: done || active ? 'none' : `1px solid ${BORDER}`,
-    flexShrink: 0,
-  }),
-  stepLabel: (active) => ({
-    fontSize: 13,
-    fontWeight: active ? 600 : 400,
-    color: active ? TEXT : TEXT_DIM,
-  }),
-  stepConnector: {
-    width: 32,
-    height: 1,
-    background: BORDER,
-    flexShrink: 0,
-  },
-  main: {
-    flex: 1,
-    maxWidth: 800,
-    width: '100%',
-    margin: '0 auto',
-    padding: '32px 24px 100px',
-  },
-  card: {
-    background: SURFACE,
-    border: `1px solid ${BORDER}`,
-    borderRadius: 12,
-    padding: 28,
-    marginBottom: 20,
-  },
-  label: {
-    display: 'block',
-    fontSize: 13,
-    fontWeight: 600,
-    color: TEXT_DIM,
-    marginBottom: 8,
-    letterSpacing: '0.03em',
-    textTransform: 'uppercase',
-  },
-  input: {
-    width: '100%',
-    padding: '10px 14px',
-    borderRadius: 8,
-    border: `1px solid ${BORDER}`,
-    background: SURFACE2,
-    color: TEXT,
-    fontSize: 14,
-    fontFamily: FONT_SANS,
-    outline: 'none',
-    boxSizing: 'border-box',
-    transition: 'border-color 0.2s',
-  },
-  textarea: {
-    width: '100%',
-    padding: '10px 14px',
-    borderRadius: 8,
-    border: `1px solid ${BORDER}`,
-    background: SURFACE2,
-    color: TEXT,
-    fontSize: 14,
-    fontFamily: FONT_SANS,
-    outline: 'none',
-    boxSizing: 'border-box',
-    resize: 'vertical',
-    minHeight: 60,
-    transition: 'border-color 0.2s',
-  },
-  btn: (primary, disabled) => ({
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '10px 22px',
-    borderRadius: 8,
-    border: primary ? 'none' : `1px solid ${BORDER}`,
-    background: disabled
-      ? SURFACE2
-      : primary
-        ? `linear-gradient(135deg, ${ACCENT}, #a855f7)`
-        : SURFACE2,
-    color: disabled ? TEXT_DIM : '#fff',
-    fontSize: 14,
-    fontWeight: 600,
-    fontFamily: FONT_SANS,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    opacity: disabled ? 0.5 : 1,
-    transition: 'all 0.2s',
-  }),
-  navBar: {
-    position: 'fixed',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    background: SURFACE,
-    borderTop: `1px solid ${BORDER}`,
-    padding: '14px 32px',
-    display: 'flex',
-    justifyContent: 'space-between',
-    zIndex: 50,
-  },
-  toggle: {
-    display: 'flex',
-    background: SURFACE2,
-    borderRadius: 8,
-    border: `1px solid ${BORDER}`,
-    overflow: 'hidden',
-    marginBottom: 20,
-  },
-  toggleBtn: (active) => ({
-    flex: 1,
-    padding: '10px 18px',
-    fontSize: 13,
-    fontWeight: 600,
-    fontFamily: FONT_SANS,
-    border: 'none',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    background: active ? ACCENT : 'transparent',
-    color: active ? '#fff' : TEXT_DIM,
-    transition: 'all 0.2s',
-  }),
-  previewBox: {
-    background: '#ffffff',
-    color: '#1a1a2e',
-    borderRadius: 8,
-    padding: '28px 32px',
-    maxHeight: 400,
-    overflow: 'auto',
-    fontSize: 15,
-    lineHeight: 1.7,
-    fontFamily: "'Georgia', serif",
-    border: `1px solid ${BORDER}`,
-  },
-  tag: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    background: SURFACE2,
-    border: `1px solid ${BORDER}`,
-    borderRadius: 6,
-    padding: '4px 10px',
-    fontSize: 12,
-    color: TEXT_DIM,
-    fontFamily: FONT_MONO,
-  },
-  modal: {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(0,0,0,0.7)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 100,
-  },
-  modalContent: {
-    background: SURFACE,
-    border: `1px solid ${BORDER}`,
-    borderRadius: 14,
-    padding: 32,
-    width: '100%',
-    maxWidth: 480,
-    position: 'relative',
-  },
-  closeBtn: {
-    position: 'absolute',
-    top: 14,
-    right: 14,
-    background: 'none',
-    border: 'none',
-    color: TEXT_DIM,
-    cursor: 'pointer',
-    padding: 4,
-  },
-  imgGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
-    gap: 12,
-  },
-  imgCard: {
-    background: SURFACE2,
-    border: `1px solid ${BORDER}`,
-    borderRadius: 8,
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  imgThumb: {
-    width: '100%',
-    height: 100,
-    objectFit: 'cover',
-    display: 'block',
-  },
-  imgInfo: {
-    padding: '8px 10px',
-    fontSize: 11,
-    color: TEXT_DIM,
-    fontFamily: FONT_MONO,
-    wordBreak: 'break-all',
-  },
-  serpBox: {
-    background: '#fff',
-    borderRadius: 8,
-    padding: '16px 20px',
-    border: `1px solid ${BORDER}`,
-    fontFamily: 'Arial, sans-serif',
-    maxWidth: 600,
-  },
-  serpTitle: {
-    fontSize: 18,
-    color: '#1a0dab',
-    lineHeight: 1.3,
-    marginBottom: 4,
-    cursor: 'pointer',
-    fontWeight: 400,
-  },
-  serpUrl: {
-    fontSize: 13,
-    color: '#006621',
-    marginBottom: 4,
-  },
-  serpDesc: {
-    fontSize: 13,
-    color: '#545454',
-    lineHeight: 1.5,
-  },
-  summaryTable: {
-    width: '100%',
-    borderCollapse: 'separate',
-    borderSpacing: 0,
-    borderRadius: 8,
-    overflow: 'hidden',
-    border: `1px solid ${BORDER}`,
-  },
-  summaryTd: (isLabel) => ({
-    padding: '12px 16px',
-    borderBottom: `1px solid ${BORDER}`,
-    fontSize: 14,
-    fontWeight: isLabel ? 600 : 400,
-    color: isLabel ? TEXT_DIM : TEXT,
-    background: isLabel ? SURFACE2 : 'transparent',
-    fontFamily: isLabel ? FONT_SANS : FONT_MONO,
-    width: isLabel ? '35%' : '65%',
-    wordBreak: 'break-word',
-  }),
-  charCount: (count, max) => ({
-    fontSize: 12,
-    fontFamily: FONT_MONO,
-    color: count > max ? '#ef4444' : count > max * 0.9 ? '#f59e0b' : TEXT_DIM,
-    marginTop: 4,
-    textAlign: 'right',
-  }),
-  successBox: {
-    background: 'rgba(34,197,94,0.1)',
-    border: '1px solid rgba(34,197,94,0.3)',
-    borderRadius: 10,
-    padding: 24,
-    textAlign: 'center',
-  },
-  errorBox: {
-    background: 'rgba(239,68,68,0.1)',
-    border: '1px solid rgba(239,68,68,0.3)',
-    borderRadius: 10,
-    padding: 24,
-    textAlign: 'center',
-  },
-  badge: (color) => ({
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 4,
-    padding: '3px 10px',
-    borderRadius: 20,
-    fontSize: 12,
-    fontWeight: 600,
-    background: `${color}18`,
-    color: color,
-    border: `1px solid ${color}30`,
-  }),
-  deleteBtn: {
-    position: 'absolute',
-    top: 4,
-    right: 4,
-    background: 'rgba(0,0,0,0.6)',
-    border: 'none',
-    borderRadius: '50%',
-    width: 24,
-    height: 24,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    cursor: 'pointer',
-    color: '#fff',
-    padding: 0,
-  },
-  toolbar: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 4,
-    padding: '8px 12px',
-    background: SURFACE2,
-    border: `1px solid ${BORDER}`,
-    borderBottom: 'none',
-    borderRadius: '8px 8px 0 0',
-    flexWrap: 'wrap',
-  },
-  toolbarBtn: (active) => ({
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 34,
-    height: 34,
-    borderRadius: 6,
-    border: 'none',
-    background: active ? ACCENT : 'transparent',
-    color: active ? '#fff' : TEXT_DIM,
-    cursor: 'pointer',
-    transition: 'all 0.15s',
-    padding: 0,
-  }),
-  toolbarDivider: {
-    width: 1,
-    height: 22,
-    background: BORDER,
-    margin: '0 6px',
-    flexShrink: 0,
-  },
-};
+function ToolButton({ title, onPress, children }) {
+  return (
+    <button className="tool" title={title} onMouseDown={(e) => { e.preventDefault(); onPress(); }}>
+      {children}
+    </button>
+  );
+}
 
 /* ───────────────────────── main component ───────────────────────── */
 
 export default function App() {
   const [step, setStep] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
+  const [showToken, setShowToken] = useState(false);
 
   // Settings
   const [apiToken, setApiToken] = useState(() => localStorage.getItem('shipit_token') || '');
@@ -801,26 +179,30 @@ export default function App() {
   const [contentLoading, setContentLoading] = useState(false);
   const [contentError, setContentError] = useState('');
   const [contentTitle, setContentTitle] = useState('');
+  const [sourceName, setSourceName] = useState('');
 
-  // Step 2
+  // Step 2 & 3
   const [images, setImages] = useState([]);
   const [altTexts, setAltTexts] = useState({});
   const [altTextRaw, setAltTextRaw] = useState('');
+  const [appliedSig, setAppliedSig] = useState('');
 
-  // Step 3
+  // Step 4
   const [metaTitle, setMetaTitle] = useState('');
   const [slug, setSlug] = useState('');
   const [seoTitle, setSeoTitle] = useState('');
   const [metaDesc, setMetaDesc] = useState('');
   const [excerpt, setExcerpt] = useState('');
 
-  // Step 4
+  // Step 5
   const previewRef = useRef(null);
 
-  // Step 5
-  const [publishing, setPublishing] = useState(false);
+  // Step 6
+  const [phase, setPhase] = useState('idle'); // idle | uploading | publishing | blocked | done | error
+  const [uploads, setUploads] = useState([]);
   const [publishResult, setPublishResult] = useState(null);
-  const [uploadProgress, setUploadProgress] = useState('');
+  const failedSrcsRef = useRef(new Set());
+  const [copied, setCopied] = useState(false);
 
   const fileInputRef = useRef(null);
   const imgInputRef = useRef(null);
@@ -832,6 +214,8 @@ export default function App() {
   useEffect(() => { localStorage.setItem('shipit_collection', collectionId); }, [collectionId]);
   useEffect(() => { localStorage.setItem('shipit_siteid', siteId); }, [siteId]);
   useEffect(() => { localStorage.setItem('shipit_fieldmap', JSON.stringify(fieldMap)); }, [fieldMap]);
+
+  const connected = !!apiToken && !!collectionId;
 
   const fetchCollectionFields = useCallback(async () => {
     if (!apiToken || !collectionId) { setFieldsError('Enter API Token and Collection ID first.'); return; }
@@ -859,20 +243,25 @@ export default function App() {
     }
   }, [apiToken, collectionId]);
 
-  /* auto-fill meta from title */
-  useEffect(() => {
-    if (contentTitle && !metaTitle) {
-      setMetaTitle(contentTitle);
-      setSlug(slugify(contentTitle));
-      setSeoTitle(contentTitle);
-    }
-  }, [contentTitle]);
-
   /* ── Step 1 handlers ── */
+
+  const loadContent = useCallback((cleaned, name) => {
+    setHtmlContent(cleaned);
+    setSourceName(name);
+    setAppliedSig('');
+    const title = detectTitle(cleaned);
+    setContentTitle(title);
+    // Pre-fill meta from the doc title, but never clobber something the user typed.
+    if (title && !metaTitle) {
+      setMetaTitle(title);
+      setSlug(slugify(title));
+      setSeoTitle(title);
+    }
+  }, [metaTitle]);
 
   const fetchGoogleDoc = useCallback(async () => {
     const docId = extractDocId(docUrl);
-    if (!docId) { setContentError('Invalid Google Docs URL. Expected format: https://docs.google.com/document/d/...'); return; }
+    if (!docId) { setContentError('That doesn’t look like a Google Docs link. Expected https://docs.google.com/document/d/…'); return; }
     setContentLoading(true);
     setContentError('');
     try {
@@ -880,56 +269,48 @@ export default function App() {
       const resp = await fetch(CORS_PROXY + encodeURIComponent(exportUrl));
       if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
       const raw = await resp.text();
-      const cleaned = cleanGoogleHtml(raw);
-      setHtmlContent(cleaned);
-      setContentTitle(detectTitle(cleaned));
+      loadContent(cleanGoogleHtml(raw), 'Google Doc');
     } catch (e) {
-      setContentError('Failed to fetch document: ' + e.message);
+      setContentError('Couldn’t fetch the document — make sure link sharing is on. (' + e.message + ')');
     } finally {
       setContentLoading(false);
     }
-  }, [docUrl]);
+  }, [docUrl, loadContent]);
 
-  const handleDocxUpload = useCallback(async (e) => {
-    const file = e.target.files?.[0];
+  const parseDocx = useCallback(async (file) => {
     if (!file) return;
     setContentLoading(true);
     setContentError('');
     try {
       const arrayBuf = await file.arrayBuffer();
       const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuf });
-      const cleaned = cleanGoogleHtml(result.value);
-      setHtmlContent(cleaned);
-      setContentTitle(detectTitle(cleaned));
+      loadContent(cleanGoogleHtml(result.value), file.name);
     } catch (e2) {
       setContentError('Failed to parse .docx: ' + e2.message);
     } finally {
       setContentLoading(false);
     }
-  }, []);
+  }, [loadContent]);
 
   /* ── Step 2 handlers ── */
 
-  const handleImageUpload = useCallback((e) => {
-    const files = Array.from(e.target.files || []).filter((f) => f.type.startsWith('image/'));
-    const sorted = files.sort((a, b) => a.name.localeCompare(b.name));
-    const promises = sorted.map(
-      (f) =>
-        new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve({ name: f.name, dataUrl: reader.result, size: f.size });
-          reader.readAsDataURL(f);
-        })
-    );
-    Promise.all(promises).then((results) => {
-      setImages((prev) => [...prev, ...results]);
+  const addImageFiles = useCallback((fileList) => {
+    const files = fileList.filter((f) => f.type.startsWith('image/'));
+    if (!files.length) return;
+    Promise.all(files.map(readFileAsDataUrl)).then((results) => {
+      setImages((prev) => {
+        const seen = new Set(prev.map((p) => p.name));
+        const merged = [...prev, ...results.filter((r) => !seen.has(r.name))];
+        return merged.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+      });
     });
-    e.target.value = '';
   }, []);
 
   const removeImage = useCallback((idx) => {
     setImages((prev) => prev.filter((_, i) => i !== idx));
   }, []);
+
+  /* ── Step 3 handlers ── */
 
   const parseAltTexts = useCallback((text) => {
     setAltTextRaw(text);
@@ -945,95 +326,130 @@ export default function App() {
     setAltTexts(map);
   }, []);
 
-  const handleAltFolderUpload = useCallback((e) => {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
+  const addAltFiles = useCallback(async (files) => {
     const map = {};
     const lines = [];
-    const promises = files.map(
-      (f) =>
-        new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const altText = (reader.result || '').trim();
-            if (altText) {
-              // File name IS the image name (e.g. "hero.webp" or "hero.webp.txt")
-              const key = f.name.replace(/\.txt$/i, '');
-              map[key] = altText;
-              lines.push(`${key} - ${altText}`);
-            }
-            resolve();
-          };
-          reader.readAsText(f);
-        })
-    );
-    Promise.all(promises).then(() => {
-      setAltTexts((prev) => ({ ...prev, ...map }));
-      setAltTextRaw((prev) => {
-        const combined = prev ? prev + '\n' + lines.join('\n') : lines.join('\n');
-        return combined.trim();
-      });
-    });
-    e.target.value = '';
+    for (const f of files) {
+      const altText = (await readFileAsText(f)).trim();
+      if (!altText) continue;
+      // File name IS the image name (e.g. "hero.webp" or "hero.webp.txt")
+      const key = f.name.replace(/\.txt$/i, '');
+      map[key] = altText.replace(/\s*\n\s*/g, ' ');
+      lines.push(`${key} - ${map[key]}`);
+    }
+    if (!lines.length) return;
+    setAltTexts((prev) => ({ ...prev, ...map }));
+    setAltTextRaw((prev) => (prev ? prev + '\n' + lines.join('\n') : lines.join('\n')).trim());
   }, []);
 
-  const replaceImagesInBlog = useCallback(() => {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(htmlContent, 'text/html');
-    const inlineImgs = doc.querySelectorAll('img');
-    let imgIdx = 0;
+  const imageSig = useMemo(
+    () => JSON.stringify(images.map((img) => [img.name, img.size, lookupAlt(altTexts, img.name)])),
+    [images, altTexts]
+  );
+  const imagesApplied = images.length > 0 && appliedSig === imageSig;
 
-    inlineImgs.forEach((img) => {
-      if (imgIdx < images.length) {
-        const imgData = images[imgIdx];
-        img.setAttribute('src', imgData.dataUrl);
-        const alt = lookupAlt(altTexts, imgData.name) || imgData.name;
-        img.setAttribute('alt', alt);
-        imgIdx++;
-      }
-    });
+  const applyImages = useCallback(() => {
+    if (!images.length) return;
+    setHtmlContent((html) => injectImages(html, images, altTexts));
+    setAppliedSig(imageSig);
+  }, [images, altTexts, imageSig]);
 
-    // Append remaining images at end
-    while (imgIdx < images.length) {
-      const imgData = images[imgIdx];
-      const imgEl = doc.createElement('img');
-      imgEl.setAttribute('src', imgData.dataUrl);
-      const alt = lookupAlt(altTexts, imgData.name) || imgData.name;
-      imgEl.setAttribute('alt', alt);
-      imgEl.style.maxWidth = '100%';
-      const p = doc.createElement('p');
-      p.appendChild(imgEl);
-      doc.body.appendChild(p);
-      imgIdx++;
+  /* ── Navigation ── */
+
+  const goTo = useCallback((next) => {
+    // Keep edits made in the Preview step.
+    if (step === 4 && previewRef.current) setHtmlContent(previewRef.current.innerHTML);
+    // Apply images/alt text automatically when moving past those steps.
+    if ((step === 1 || step === 2) && next > step && images.length && appliedSig !== imageSig) applyImages();
+    setStep(next);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [step, images.length, appliedSig, imageSig, applyImages]);
+
+  const canNext = useMemo(() => {
+    if (step === 0) return !!htmlContent;
+    if (step === 3) return !!metaTitle.trim() && !!slug.trim();
+    return true;
+  }, [step, htmlContent, metaTitle, slug]);
+
+  const imageCount = useMemo(() => countImages(htmlContent), [htmlContent]);
+  const contentSize = useMemo(() => new Blob([htmlContent]).size, [htmlContent]);
+  const wordCount = useMemo(() => {
+    const text = new DOMParser().parseFromString(htmlContent, 'text/html').body.textContent || '';
+    return text.split(/\s+/).filter(Boolean).length;
+  }, [htmlContent]);
+  const altMatched = images.filter((img) => !!lookupAlt(altTexts, img.name)).length;
+
+  /* ── Publish ── */
+
+  const handlePublish = useCallback(async ({ skipFailed = false } = {}) => {
+    setPublishResult(null);
+    const updateUpload = (id, patch) => setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
+    const doc = new DOMParser().parseFromString(sanitizeListsForWebflow(htmlContent), 'text/html');
+
+    if (skipFailed) {
+      doc.querySelectorAll('img').forEach((img) => {
+        if (!failedSrcsRef.current.has(img.getAttribute('src'))) return;
+        const parent = img.parentElement;
+        img.remove();
+        if (parent && parent !== doc.body && !parent.textContent.trim() && !parent.querySelector('img')) parent.remove();
+      });
     }
 
-    setHtmlContent(doc.body.innerHTML);
-  }, [htmlContent, images, altTexts]);
-
-  /* ── Step 5 handler ── */
-
-  const handlePublish = useCallback(async () => {
-    setPublishing(true);
-    setPublishResult(null);
-    setUploadProgress('');
-    const rawHtml = previewRef.current ? previewRef.current.innerHTML : htmlContent;
-    const sanitized = sanitizeListsForWebflow(rawHtml);
-    const finalHtml = await uploadDataUrlImages(sanitized, {
-      siteId,
-      apiToken,
-      images,
-      altTexts,
-      onProgress: (i, total, name) => setUploadProgress(`Uploading image ${i}/${total}: ${name}`),
+    // ── 1. Upload every image that isn't on the Webflow CDN yet ──
+    const jobs = [];
+    doc.querySelectorAll('img').forEach((img, i) => {
+      const src = img.getAttribute('src') || '';
+      const kind = needsUpload(src);
+      if (!kind) return;
+      const name = img.getAttribute('data-shipit-name') || img.getAttribute('alt') || `image-${i + 1}`;
+      jobs.push({ id: jobs.length, img, src, kind, name });
     });
-    setUploadProgress('');
 
-    // Build fieldData using mapped field slugs
+    setUploads(jobs.map((j) => ({ id: j.id, name: j.name, thumb: j.src, status: 'pending', message: 'Waiting…' })));
+    const failed = new Set();
+
+    if (jobs.length) {
+      setPhase('uploading');
+      for (const job of jobs) {
+        updateUpload(job.id, { status: 'working', message: 'Preparing…' });
+        try {
+          const { url, cached, optimized } = await uploadImage(job, {
+            siteId,
+            apiToken,
+            onStage: (stage) => updateUpload(job.id, {
+              message: stage === 'optimizing' ? 'Optimizing…' : 'Uploading to Webflow CDN…',
+            }),
+          });
+          job.img.setAttribute('src', url);
+          updateUpload(job.id, {
+            status: 'done',
+            message: cached ? 'Already uploaded' : optimized ? 'Uploaded · resized to fit' : 'Uploaded',
+          });
+        } catch (e) {
+          failed.add(job.src);
+          updateUpload(job.id, { status: 'error', message: e.message });
+        }
+      }
+    }
+
+    failedSrcsRef.current = failed;
+    if (failed.size) {
+      // Never publish broken images or placeholder text — let the user decide.
+      setPhase('blocked');
+      return;
+    }
+
+    // ── 2. Create the CMS item ──
+    doc.querySelectorAll('[data-shipit-name]').forEach((el) => el.removeAttribute('data-shipit-name'));
+    const finalHtml = doc.body.innerHTML;
+
     const fieldData = { name: metaTitle, slug };
     if (fieldMap.body) fieldData[fieldMap.body] = finalHtml;
     if (fieldMap.metaTitle) fieldData[fieldMap.metaTitle] = seoTitle;
     if (fieldMap.metaDesc) fieldData[fieldMap.metaDesc] = metaDesc;
     if (fieldMap.excerpt) fieldData[fieldMap.excerpt] = excerpt;
 
+    setPhase('publishing');
     try {
       const resp = await fetch('/api/publish', {
         method: 'POST',
@@ -1048,162 +464,155 @@ export default function App() {
         if (data.details) detail += '\n' + JSON.stringify(data.details, null, 2);
         if (!detail) detail = JSON.stringify(data);
         setPublishResult({ ok: false, error: `HTTP ${resp.status}: ${detail}` });
+        setPhase('error');
       } else {
-        setPublishResult({ ok: true, id: data.id || data._id });
+        setPublishResult({ ok: true, id: data.id || data._id, images: jobs.length });
+        setPhase('done');
       }
     } catch (e) {
       setPublishResult({ ok: false, error: e.message });
-    } finally {
-      setPublishing(false);
+      setPhase('error');
     }
-  }, [htmlContent, apiToken, collectionId, siteId, images, altTexts, metaTitle, slug, seoTitle, metaDesc, excerpt, fieldMap]);
+  }, [htmlContent, apiToken, collectionId, siteId, metaTitle, slug, seoTitle, metaDesc, excerpt, fieldMap]);
 
-  /* ── Navigation guard ── */
+  const startOver = useCallback(() => {
+    setStep(0);
+    setDocUrl(''); setHtmlContent(''); setContentTitle(''); setSourceName(''); setContentError('');
+    setImages([]); setAltTexts({}); setAltTextRaw(''); setAppliedSig('');
+    setMetaTitle(''); setSlug(''); setSeoTitle(''); setMetaDesc(''); setExcerpt('');
+    setPhase('idle'); setUploads([]); setPublishResult(null);
+    window.scrollTo({ top: 0 });
+  }, []);
 
-  const canNext = useMemo(() => {
-    if (step === 0) return !!htmlContent;
-    if (step === 3) return !!metaTitle.trim() && !!slug.trim();
-    if (step === 5) return !!apiToken && !!collectionId;
-    return true;
-  }, [step, htmlContent, metaTitle, slug, apiToken, collectionId]);
-
-  const imageCount = useMemo(() => countImages(htmlContent), [htmlContent]);
-  const contentSize = useMemo(() => new Blob([htmlContent]).size, [htmlContent]);
+  const busy = phase === 'uploading' || phase === 'publishing';
+  const doneUploads = uploads.filter((u) => u.status === 'done').length;
+  const failedUploads = uploads.filter((u) => u.status === 'error').length;
 
   /* ────────────────────────── render ────────────────────────── */
 
   return (
-    <div style={s.app}>
+    <>
       {/* ── Header ── */}
-      <header style={s.header}>
-        <div style={s.headerLeft}>
-          <div style={s.logoBox}>
-            <Send size={20} color="#fff" />
-          </div>
+      <header className="header">
+        <div className="brand">
+          <div className="brand-mark"><Ship size={20} strokeWidth={2} /></div>
           <div>
-            <h1 style={s.headerTitle}>ShipIt</h1>
-            <p style={s.headerSub}>by SalesRobot</p>
+            <div className="brand-name">Ship<em>It</em></div>
+            <div className="brand-sub">by SalesRobot</div>
           </div>
         </div>
-        <button
-          style={s.gearBtn}
-          onClick={() => setShowSettings(true)}
-          onMouseEnter={(e) => { e.currentTarget.style.borderColor = ACCENT; e.currentTarget.style.color = TEXT; }}
-          onMouseLeave={(e) => { e.currentTarget.style.borderColor = BORDER; e.currentTarget.style.color = TEXT_DIM; }}
-        >
-          <Settings size={16} /> Settings
-        </button>
+        <div className="header-actions">
+          <button
+            className={`status-pill ${connected ? 'on' : 'off'}`}
+            onClick={() => setShowSettings(true)}
+            style={{ cursor: 'pointer' }}
+            title={connected ? 'Webflow connected' : 'Add Webflow credentials'}
+          >
+            <span className="status-dot" />
+            <span className="status-text">{connected ? 'Webflow connected' : 'Not connected'}</span>
+          </button>
+          <button className="btn btn-sm" onClick={() => setShowSettings(true)}>
+            <SlidersHorizontal size={15} /> Settings
+          </button>
+        </div>
       </header>
 
       {/* ── Stepper ── */}
-      <div style={s.stepper}>
+      <nav className="stepper" aria-label="Progress">
         {STEPS.map((st, i) => {
           const Icon = st.icon;
           const active = i === step;
           const done = i < step;
           return (
-            <div key={i} style={{ display: 'flex', alignItems: 'center' }}>
-              {i > 0 && <div style={s.stepConnector} />}
-              <div style={s.stepItem(active, done)}>
-                <div style={s.stepNum(active, done)}>
-                  {done ? <Check size={14} /> : i + 1}
-                </div>
-                <span style={s.stepLabel(active)}>{st.label}</span>
-              </div>
+            <div key={st.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              {i > 0 && <span className={`step-rule${i <= step ? ' done' : ''}`} />}
+              <button
+                className={`step${active ? ' active' : ''}${done ? ' done' : ''}`}
+                onClick={() => done && !busy && goTo(i)}
+                aria-current={active ? 'step' : undefined}
+              >
+                <span className="step-icon">{done ? <Check size={14} strokeWidth={2.5} /> : <Icon size={14} />}</span>
+                <span className="step-label">{st.label}</span>
+              </button>
             </div>
           );
         })}
-      </div>
+      </nav>
 
-      {/* ── Main content ── */}
-      <main style={s.main}>
+      <main className="main" key={step}>
+        <StepHead index={step} />
 
         {/* ──────── STEP 1: CONTENT ──────── */}
         {step === 0 && (
           <>
-            <div style={s.card}>
-              <div style={s.toggle}>
-                <button
-                  style={s.toggleBtn(contentMode === 'url')}
-                  onClick={() => setContentMode('url')}
-                >
-                  <Link size={16} /> Google Doc URL
+            <div className="card">
+              <div className="segmented">
+                <button className={contentMode === 'url' ? 'on' : ''} onClick={() => setContentMode('url')}>
+                  <Link2 size={16} /> Google Doc link
                 </button>
-                <button
-                  style={s.toggleBtn(contentMode === 'upload')}
-                  onClick={() => setContentMode('upload')}
-                >
+                <button className={contentMode === 'upload' ? 'on' : ''} onClick={() => setContentMode('upload')}>
                   <FileUp size={16} /> Upload .docx
                 </button>
               </div>
 
               {contentMode === 'url' ? (
-                <div>
-                  <label style={s.label}>Google Docs URL</label>
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    <input
-                      type="text"
-                      style={{ ...s.input, flex: 1 }}
-                      placeholder="https://docs.google.com/document/d/..."
-                      value={docUrl}
-                      onChange={(e) => setDocUrl(e.target.value)}
-                      onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                      onBlur={(e) => { e.target.style.borderColor = BORDER; }}
-                    />
-                    <button
-                      style={s.btn(true, contentLoading || !docUrl.trim())}
-                      disabled={contentLoading || !docUrl.trim()}
-                      onClick={fetchGoogleDoc}
-                    >
-                      {contentLoading ? 'Fetching...' : 'Fetch'}
+                <form onSubmit={(e) => { e.preventDefault(); if (docUrl.trim() && !contentLoading) fetchGoogleDoc(); }}>
+                  <label className="label">Google Docs URL</label>
+                  <div className="row">
+                    <div className="input-wrap grow">
+                      <Globe size={16} />
+                      <input
+                        className="input"
+                        placeholder="https://docs.google.com/document/d/…"
+                        value={docUrl}
+                        onChange={(e) => setDocUrl(e.target.value)}
+                      />
+                    </div>
+                    <button type="submit" className="btn btn-gold" disabled={contentLoading || !docUrl.trim()}>
+                      {contentLoading ? <LoaderCircle size={16} className="spin" /> : <WandSparkles size={16} />}
+                      {contentLoading ? 'Fetching…' : 'Import'}
                     </button>
                   </div>
-                </div>
+                  <p className="faint mt-8">The doc needs “Anyone with the link can view” sharing.</p>
+                </form>
               ) : (
-                <div>
-                  <label style={s.label}>Upload .docx file</label>
+                <>
                   <input
                     ref={fileInputRef}
                     type="file"
                     accept=".docx"
-                    style={{ display: 'none' }}
-                    onChange={handleDocxUpload}
+                    hidden
+                    onChange={(e) => { parseDocx(e.target.files?.[0]); e.target.value = ''; }}
                   />
-                  <button
-                    style={s.btn(true, contentLoading)}
-                    disabled={contentLoading}
+                  <Dropzone
+                    icon={contentLoading ? LoaderCircle : FileType2}
+                    title={contentLoading ? 'Reading your document…' : 'Drop a .docx here'}
+                    sub="or click to browse your files"
                     onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Upload size={16} /> {contentLoading ? 'Processing...' : 'Select File'}
-                  </button>
-                </div>
+                    onFiles={(files) => parseDocx(files[0])}
+                    accept={(f) => /\.docx$/i.test(f.name)}
+                  />
+                </>
               )}
 
               {contentError && (
-                <div style={{ marginTop: 14, color: '#ef4444', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <AlertTriangle size={14} /> {contentError}
+                <div className="notice err mt-16" style={{ marginBottom: 0 }}>
+                  <CircleAlert size={16} /> <span>{contentError}</span>
                 </div>
               )}
             </div>
 
             {htmlContent && (
-              <div style={s.card}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                  <div style={{ fontSize: 16, fontWeight: 600 }}>Content Loaded</div>
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    <span style={s.tag}><FileText size={12} /> {formatBytes(contentSize)}</span>
-                    <span style={s.tag}><Image size={12} /> {imageCount} images</span>
+              <div className="card">
+                <div className="card-head">
+                  <div className="card-title"><Feather size={17} /> {contentTitle || 'Content loaded'}</div>
+                  <div className="row">
+                    {sourceName && <span className="chip gold"><Sparkles size={12} /> {sourceName}</span>}
+                    <span className="chip"><Database size={12} /> {formatBytes(contentSize)}</span>
+                    <span className="chip"><Images size={12} /> {imageCount} image{imageCount === 1 ? '' : 's'}</span>
                   </div>
                 </div>
-                {contentTitle && (
-                  <div style={{ marginBottom: 14, fontSize: 13, color: TEXT_DIM }}>
-                    <strong style={{ color: TEXT }}>Title:</strong> {contentTitle}
-                  </div>
-                )}
-                <div
-                  style={{ ...s.previewBox, maxHeight: 250 }}
-                  dangerouslySetInnerHTML={{ __html: htmlContent }}
-                />
+                <div className="paper short" dangerouslySetInnerHTML={{ __html: htmlContent }} />
               </div>
             )}
           </>
@@ -1211,145 +620,111 @@ export default function App() {
 
         {/* ──────── STEP 2: IMAGES ──────── */}
         {step === 1 && (
-          <>
-            <div style={s.card}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <label style={{ ...s.label, marginBottom: 0 }}>Upload Images</label>
-                <span style={{ fontSize: 12, color: TEXT_DIM }}>{images.length} uploaded</span>
-              </div>
-              <input
-                ref={imgInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                style={{ display: 'none' }}
-                onChange={handleImageUpload}
-              />
-              <input
-                ref={imgFolderInputRef}
-                type="file"
-                webkitdirectory=""
-                directory=""
-                multiple
-                style={{ display: 'none' }}
-                onChange={handleImageUpload}
-              />
-              <div style={{ display: 'flex', gap: 10 }}>
-                <button
-                  style={s.btn(true, false)}
-                  onClick={() => imgInputRef.current?.click()}
-                >
-                  <Upload size={16} /> Select Files
-                </button>
-                <button
-                  style={s.btn(false, false)}
-                  onClick={() => imgFolderInputRef.current?.click()}
-                >
-                  <FolderOpen size={16} /> Upload Folder
-                </button>
-              </div>
-              <p style={{ fontSize: 12, color: TEXT_DIM, marginTop: 8 }}>
-                Select individual images or an entire folder. Sorted by filename automatically.
-              </p>
+          <div className="card">
+            <input ref={imgInputRef} type="file" accept="image/*" multiple hidden
+              onChange={(e) => { addImageFiles(Array.from(e.target.files || [])); e.target.value = ''; }} />
+            <input ref={imgFolderInputRef} type="file" webkitdirectory="" directory="" multiple hidden
+              onChange={(e) => { addImageFiles(Array.from(e.target.files || [])); e.target.value = ''; }} />
 
-              {images.length > 0 && (
-                <div style={{ ...s.imgGrid, marginTop: 16 }}>
-                  {images.map((img, i) => (
-                    <div key={i} style={s.imgCard}>
-                      <img src={img.dataUrl} alt={img.name} style={s.imgThumb} />
-                      <button style={s.deleteBtn} onClick={() => removeImage(i)} title="Remove"><Trash2 size={12} /></button>
-                      <div style={s.imgInfo}>{img.name}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
+            <Dropzone
+              icon={ImagePlus}
+              title="Drop images here"
+              sub="JPG, PNG, WebP, GIF or SVG · large files are resized automatically"
+              onClick={() => imgInputRef.current?.click()}
+              onFiles={addImageFiles}
+              accept={(f) => f.type.startsWith('image/')}
+            />
+            <div className="row mt-12" style={{ justifyContent: 'space-between' }}>
+              <button className="btn btn-sm" onClick={() => imgFolderInputRef.current?.click()}>
+                <FolderOpen size={15} /> Choose a folder
+              </button>
+              <span className="faint">
+                {images.length} added · {imageCount} in document
+              </span>
             </div>
-          </>
+
+            {images.length > 0 && (
+              <div className="img-grid mt-16">
+                {images.map((img, i) => (
+                  <div key={img.name} className="img-card" style={{ animationDelay: `${Math.min(i, 12) * 30}ms` }}>
+                    <img src={img.dataUrl} alt={img.name} />
+                    <span className="img-index">#{i + 1}</span>
+                    <button className="img-del" onClick={() => removeImage(i)} title="Remove"><Trash2 size={13} /></button>
+                    <div className="img-meta">
+                      <div className="img-name" title={img.name}>{img.name}</div>
+                      <div className="faint" style={{ fontSize: 11 }}>{formatBytes(img.size)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         {/* ──────── STEP 3: ALT TEXT ──────── */}
         {step === 2 && (
           <>
-            <div style={s.card}>
-              <label style={s.label}>Alt Texts</label>
-              <p style={{ fontSize: 12, color: TEXT_DIM, marginBottom: 12 }}>
-                Upload a folder of text files — each file named after its image (e.g. <code style={{ fontFamily: FONT_MONO, background: SURFACE2, padding: '2px 6px', borderRadius: 4, fontSize: 11 }}>hero.webp</code> or <code style={{ fontFamily: FONT_MONO, background: SURFACE2, padding: '2px 6px', borderRadius: 4, fontSize: 11 }}>hero.webp.txt</code>), containing the alt text as its content.
-              </p>
-              <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
-                <input
-                  ref={altFolderInputRef}
-                  type="file"
-                  webkitdirectory=""
-                  directory=""
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={handleAltFolderUpload}
-                />
-                <button
-                  style={s.btn(true, false)}
-                  onClick={() => altFolderInputRef.current?.click()}
-                >
-                  <FolderOpen size={16} /> Upload Alt Text Folder
-                </button>
-                {Object.keys(altTexts).length > 0 && (
-                  <span style={{ ...s.tag, alignSelf: 'center' }}>
-                    <CheckCircle2 size={12} color="#22c55e" /> {Object.keys(altTexts).length} matched
-                  </span>
-                )}
+            <div className="card">
+              <input ref={altFolderInputRef} type="file" webkitdirectory="" directory="" multiple hidden
+                onChange={(e) => { addAltFiles(Array.from(e.target.files || [])); e.target.value = ''; }} />
+              <div className="card-head">
+                <div className="card-title"><Quote size={17} /> Alt text</div>
+                <div className="row">
+                  {images.length > 0 && (
+                    <span className={`chip ${altMatched === images.length ? 'ok' : 'warn'}`}>
+                      <Tag size={12} /> {altMatched}/{images.length} matched
+                    </span>
+                  )}
+                  <button className="btn btn-sm" onClick={() => altFolderInputRef.current?.click()}>
+                    <FolderOpen size={15} /> Load folder
+                  </button>
+                </div>
               </div>
+              <p className="muted" style={{ marginBottom: 12 }}>
+                One line per image as <code>file-name - description</code>, or load a folder of text files named
+                after each image (<code>hero.webp.txt</code>).
+              </p>
               <textarea
-                style={s.textarea}
-                rows={6}
-                placeholder={"hero.webp - A team collaborating on a project\nfeature.jpg - Dashboard analytics overview\n\n(Auto-filled from folder upload, or type manually)"}
+                className="textarea mono"
+                rows={7}
+                placeholder={'hero.webp - A team collaborating around a laptop\nfeature.jpg - Dashboard showing weekly reply rates'}
                 value={altTextRaw}
                 onChange={(e) => parseAltTexts(e.target.value)}
-                onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                onBlur={(e) => { e.target.style.borderColor = BORDER; }}
               />
             </div>
 
-            {/* Image preview with alt text status */}
-            {images.length > 0 && (
-              <div style={s.card}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                  <label style={{ ...s.label, marginBottom: 0 }}>Image &amp; Alt Text Mapping</label>
-                  <span style={{ fontSize: 12, color: TEXT_DIM }}>
-                    {images.filter((img) => !!lookupAlt(altTexts, img.name)).length}/{images.length} matched
-                  </span>
+            {images.length > 0 ? (
+              <div className="card">
+                <div className="card-head">
+                  <div className="card-title"><MousePointerClick size={17} /> How images will appear</div>
+                  {imagesApplied ? (
+                    <span className="chip ok"><CircleCheck size={12} /> Applied to post</span>
+                  ) : (
+                    <button className="btn btn-sm btn-gold" onClick={applyImages}>
+                      <WandSparkles size={15} /> Apply to post
+                    </button>
+                  )}
                 </div>
-                <div style={{ ...s.imgGrid }}>
+                <div className="img-grid">
                   {images.map((img, i) => {
-                    const matchedAlt = lookupAlt(altTexts, img.name);
+                    const alt = lookupAlt(altTexts, img.name);
                     return (
-                      <div key={i} style={s.imgCard}>
-                        <img src={img.dataUrl} alt={img.name} style={s.imgThumb} />
-                        {matchedAlt && (
-                          <div style={{ position: 'absolute', top: 4, left: 4 }}>
-                            <CheckCircle2 size={18} color="#22c55e" />
-                          </div>
-                        )}
-                        <div style={s.imgInfo}>
-                          {img.name}
-                          {matchedAlt && (
-                            <div style={{ color: '#22c55e', marginTop: 2, fontSize: 10 }}>{matchedAlt}</div>
-                          )}
+                      <div key={img.name} className={`img-card${alt ? ' matched' : ''}`}>
+                        <img src={img.dataUrl} alt={alt || img.name} />
+                        <span className="img-index">#{i + 1}</span>
+                        {alt && <span className="img-badge"><CircleCheck size={16} /></span>}
+                        <div className="img-meta">
+                          <div className="img-name" title={img.name}>{img.name}</div>
+                          <div className={`img-alt${alt ? '' : ' missing'}`}>{alt || 'No alt text yet'}</div>
                         </div>
                       </div>
                     );
                   })}
                 </div>
+                <p className="faint mt-12">Images are applied automatically when you continue.</p>
               </div>
-            )}
-
-            {images.length > 0 && (
-              <div style={{ textAlign: 'center', marginTop: 8 }}>
-                <button
-                  style={s.btn(true, false)}
-                  onClick={replaceImagesInBlog}
-                >
-                  <Image size={16} /> Replace Images in Blog
-                </button>
-              </div>
+            ) : (
+              <div className="notice info"><Images size={16} /> <span>No images added — you can skip this step.</span></div>
             )}
           </>
         )}
@@ -1357,93 +732,49 @@ export default function App() {
         {/* ──────── STEP 4: META ──────── */}
         {step === 3 && (
           <>
-            <div style={s.card}>
-              <div style={{ marginBottom: 20 }}>
-                <label style={s.label}>Title *</label>
+            <div className="card">
+              <div className="field">
+                <label className="label"><span>Title <span className="req">*</span></span></label>
                 <input
-                  type="text"
-                  style={s.input}
+                  className="input"
                   value={metaTitle}
-                  onChange={(e) => {
-                    setMetaTitle(e.target.value);
-                    setSlug(slugify(e.target.value));
-                  }}
+                  onChange={(e) => { setMetaTitle(e.target.value); setSlug(slugify(e.target.value)); }}
                   placeholder="Blog post title"
-                  onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                  onBlur={(e) => { e.target.style.borderColor = BORDER; }}
+                  style={{ fontSize: 16 }}
                 />
               </div>
-
-              <div style={{ marginBottom: 20 }}>
-                <label style={s.label}>Slug *</label>
-                <input
-                  type="text"
-                  style={{ ...s.input, fontFamily: FONT_MONO }}
-                  value={slug}
-                  onChange={(e) => setSlug(e.target.value)}
-                  placeholder="blog-post-slug"
-                  onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                  onBlur={(e) => { e.target.style.borderColor = BORDER; }}
-                />
+              <div className="field">
+                <label className="label"><span>Slug <span className="req">*</span></span></label>
+                <div className="input-wrap">
+                  <Hash size={15} />
+                  <input className="input mono" value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="blog-post-slug" />
+                </div>
               </div>
-
-              <div style={{ marginBottom: 20 }}>
-                <label style={s.label}>Meta Title</label>
-                <input
-                  type="text"
-                  style={s.input}
-                  value={seoTitle}
-                  onChange={(e) => setSeoTitle(e.target.value)}
-                  placeholder="SEO title for search engines"
-                  onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                  onBlur={(e) => { e.target.style.borderColor = BORDER; }}
-                />
-                <div style={s.charCount(seoTitle.length, 60)}>{seoTitle.length}/60</div>
-              </div>
-
-              <div style={{ marginBottom: 20 }}>
-                <label style={s.label}>Meta Description</label>
-                <textarea
-                  style={s.textarea}
-                  rows={3}
-                  value={metaDesc}
-                  onChange={(e) => setMetaDesc(e.target.value)}
-                  placeholder="Brief description for search results"
-                  onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                  onBlur={(e) => { e.target.style.borderColor = BORDER; }}
-                />
-                <div style={s.charCount(metaDesc.length, 160)}>{metaDesc.length}/160</div>
-              </div>
-
-              <div>
-                <label style={s.label}>Custom Excerpt</label>
-                <textarea
-                  style={s.textarea}
-                  rows={3}
-                  value={excerpt}
-                  onChange={(e) => setExcerpt(e.target.value)}
-                  placeholder="Custom excerpt / post summary"
-                  onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                  onBlur={(e) => { e.target.style.borderColor = BORDER; }}
-                />
-                <div style={s.charCount(excerpt.length, 300)}>{excerpt.length}/300</div>
-              </div>
+              <CharField label="Meta title" value={seoTitle} max={60}>
+                <input className="input" value={seoTitle} onChange={(e) => setSeoTitle(e.target.value)} placeholder="SEO title for search engines" />
+              </CharField>
+              <CharField label="Meta description" value={metaDesc} max={160}>
+                <textarea className="textarea" rows={3} value={metaDesc} onChange={(e) => setMetaDesc(e.target.value)} placeholder="A short, compelling summary for search results" />
+              </CharField>
+              <CharField label="Excerpt" value={excerpt} max={300}>
+                <textarea className="textarea" rows={3} value={excerpt} onChange={(e) => setExcerpt(e.target.value)} placeholder="Shown on blog listing cards" />
+              </CharField>
             </div>
 
-            {/* SERP Preview */}
-            <div style={s.card}>
-              <label style={{ ...s.label, marginBottom: 14 }}>
-                <Globe size={14} style={{ verticalAlign: -2, marginRight: 6 }} />
-                Google SERP Preview
-              </label>
-              <div style={s.serpBox}>
-                <div style={s.serpTitle}>
-                  {seoTitle || metaTitle || 'Page Title'}
+            <div className="card">
+              <div className="card-head">
+                <div className="card-title"><Globe size={17} /> Google preview</div>
+              </div>
+              <div className="serp">
+                <div className="serp-site">
+                  <div className="serp-fav"><Anchor size={13} /></div>
+                  <div>
+                    <div className="serp-domain">yourdomain.com</div>
+                    <div className="serp-path">https://yourdomain.com › blog › {slug || 'page-slug'}</div>
+                  </div>
                 </div>
-                <div style={s.serpUrl}>
-                  https://yourdomain.com/blog/{slug || 'page-slug'}
-                </div>
-                <div style={s.serpDesc}>
+                <div className="serp-title">{seoTitle || metaTitle || 'Page title'}</div>
+                <div className="serp-desc">
                   {metaDesc || 'Add a meta description to see how your page will appear in Google search results.'}
                 </div>
               </div>
@@ -1453,130 +784,53 @@ export default function App() {
 
         {/* ──────── STEP 5: PREVIEW ──────── */}
         {step === 4 && (
-          <div style={s.card}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <label style={{ ...s.label, marginBottom: 0 }}>Live Preview</label>
-              <span style={s.tag}><Eye size={12} /> Editable</span>
-            </div>
-
-            {/* ── Formatting Toolbar ── */}
-            <div style={s.toolbar}>
-              <button
-                style={s.toolbarBtn(false)}
-                title="Bold"
-                onMouseDown={(e) => { e.preventDefault(); document.execCommand('bold'); }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
-              >
-                <Bold size={16} />
-              </button>
-              <button
-                style={s.toolbarBtn(false)}
-                title="Italic"
-                onMouseDown={(e) => { e.preventDefault(); document.execCommand('italic'); }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
-              >
-                <Italic size={16} />
-              </button>
-
-              <div style={s.toolbarDivider} />
-
-              <button
-                style={s.toolbarBtn(false)}
-                title="Heading 1"
-                onMouseDown={(e) => { e.preventDefault(); document.execCommand('formatBlock', false, 'h1'); }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
-              >
-                <Heading1 size={16} />
-              </button>
-              <button
-                style={s.toolbarBtn(false)}
-                title="Heading 2"
-                onMouseDown={(e) => { e.preventDefault(); document.execCommand('formatBlock', false, 'h2'); }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
-              >
-                <Heading2 size={16} />
-              </button>
-              <button
-                style={s.toolbarBtn(false)}
-                title="Heading 3"
-                onMouseDown={(e) => { e.preventDefault(); document.execCommand('formatBlock', false, 'h3'); }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
-              >
-                <Heading3 size={16} />
-              </button>
-              <button
-                style={s.toolbarBtn(false)}
-                title="Normal paragraph"
-                onMouseDown={(e) => { e.preventDefault(); document.execCommand('formatBlock', false, 'p'); }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
-              >
-                <Type size={16} />
-              </button>
-
-              <div style={s.toolbarDivider} />
-
-              <button
-                style={s.toolbarBtn(false)}
-                title="Insert Link"
-                onMouseDown={(e) => {
-                  e.preventDefault();
+          <div>
+            <div className="toolbar">
+              <ToolButton title="Bold" onPress={() => document.execCommand('bold')}><Bold size={16} /></ToolButton>
+              <ToolButton title="Italic" onPress={() => document.execCommand('italic')}><Italic size={16} /></ToolButton>
+              <span className="tool-sep" />
+              <ToolButton title="Heading 1" onPress={() => document.execCommand('formatBlock', false, 'h1')}><Heading1 size={16} /></ToolButton>
+              <ToolButton title="Heading 2" onPress={() => document.execCommand('formatBlock', false, 'h2')}><Heading2 size={16} /></ToolButton>
+              <ToolButton title="Heading 3" onPress={() => document.execCommand('formatBlock', false, 'h3')}><Heading3 size={16} /></ToolButton>
+              <ToolButton title="Paragraph" onPress={() => document.execCommand('formatBlock', false, 'p')}><Pilcrow size={16} /></ToolButton>
+              <span className="tool-sep" />
+              <ToolButton
+                title="Insert link"
+                onPress={() => {
                   const url = prompt('Enter URL:');
-                  if (url) {
-                    document.execCommand('createLink', false, url);
-                    // Set target=_blank on newly created link
-                    const sel = window.getSelection();
-                    if (sel.rangeCount) {
-                      const anchor = sel.anchorNode?.parentElement?.closest('a') || sel.anchorNode?.parentElement;
-                      if (anchor && anchor.tagName === 'A') {
-                        anchor.setAttribute('target', '_blank');
-                        anchor.setAttribute('rel', 'noopener noreferrer');
-                      }
-                    }
+                  if (!url) return;
+                  document.execCommand('createLink', false, url);
+                  const sel = window.getSelection();
+                  const anchor = sel?.anchorNode?.parentElement?.closest('a');
+                  if (anchor) {
+                    anchor.setAttribute('target', '_blank');
+                    anchor.setAttribute('rel', 'noopener noreferrer');
                   }
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = SURFACE; e.currentTarget.style.color = TEXT; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = TEXT_DIM; }}
               >
                 <Link2 size={16} />
-              </button>
+              </ToolButton>
+              <span className="faint"><Feather size={13} /> Editing live</span>
             </div>
-
             <div
               ref={previewRef}
+              className="paper"
               contentEditable
               suppressContentEditableWarning
-              style={{
-                ...s.previewBox,
-                maxHeight: 'none',
-                minHeight: 300,
-                outline: 'none',
-                cursor: 'text',
-                borderRadius: '0 0 8px 8px',
-              }}
               onClick={(e) => {
                 const anchor = e.target.closest('a');
-                if (anchor) {
-                  e.preventDefault();
-                  const currentHref = anchor.getAttribute('href') || '';
-                  const newHref = prompt('Edit link URL:', currentHref);
-                  if (newHref !== null) {
-                    if (newHref.trim() === '') {
-                      // Remove the link, keep the text
-                      const frag = document.createDocumentFragment();
-                      while (anchor.firstChild) frag.appendChild(anchor.firstChild);
-                      anchor.replaceWith(frag);
-                    } else {
-                      anchor.setAttribute('href', newHref);
-                      anchor.setAttribute('target', '_blank');
-                      anchor.setAttribute('rel', 'noopener noreferrer');
-                    }
-                  }
+                if (!anchor) return;
+                e.preventDefault();
+                const newHref = prompt('Edit link URL (leave empty to remove the link):', anchor.getAttribute('href') || '');
+                if (newHref === null) return;
+                if (newHref.trim() === '') {
+                  const frag = document.createDocumentFragment();
+                  while (anchor.firstChild) frag.appendChild(anchor.firstChild);
+                  anchor.replaceWith(frag);
+                } else {
+                  anchor.setAttribute('href', newHref);
+                  anchor.setAttribute('target', '_blank');
+                  anchor.setAttribute('rel', 'noopener noreferrer');
                 }
               }}
               dangerouslySetInnerHTML={{ __html: htmlContent }}
@@ -1587,101 +841,156 @@ export default function App() {
         {/* ──────── STEP 6: PUBLISH ──────── */}
         {step === 5 && (
           <>
-            <div style={s.card}>
-              <label style={{ ...s.label, marginBottom: 16 }}>Pre-Publish Summary</label>
-              <table style={s.summaryTable}>
-                <tbody>
-                  <tr>
-                    <td style={s.summaryTd(true)}>Title</td>
-                    <td style={s.summaryTd(false)}>{metaTitle || '—'}</td>
-                  </tr>
-                  <tr>
-                    <td style={s.summaryTd(true)}>Slug</td>
-                    <td style={s.summaryTd(false)}>{slug || '—'}</td>
-                  </tr>
-                  <tr>
-                    <td style={s.summaryTd(true)}>Meta Title</td>
-                    <td style={s.summaryTd(false)}>{seoTitle || '—'}</td>
-                  </tr>
-                  <tr>
-                    <td style={s.summaryTd(true)}>Meta Description</td>
-                    <td style={s.summaryTd(false)}>{metaDesc || '—'}</td>
-                  </tr>
-                  <tr>
-                    <td style={s.summaryTd(true)}>Content Size</td>
-                    <td style={s.summaryTd(false)}>{formatBytes(contentSize)}</td>
-                  </tr>
-                  <tr>
-                    <td style={s.summaryTd(true)}>Images</td>
-                    <td style={s.summaryTd(false)}>{imageCount}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            {(!apiToken || !collectionId) && (
-              <div style={{ ...s.card, borderColor: '#f59e0b40', background: 'rgba(245,158,11,0.05)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#f59e0b', fontSize: 14 }}>
-                  <AlertTriangle size={18} />
-                  <span>
-                    <strong>Webflow credentials not set.</strong> Open Settings to add your API Token and Collection ID.
-                  </span>
+            {phase !== 'done' && (
+              <div className="card">
+                <div className="summary">
+                  <div className="summary-item wide">
+                    <div className="summary-key"><Feather size={12} /> Title</div>
+                    <div className={`summary-val${metaTitle ? '' : ' empty'}`}>{metaTitle || 'Not set'}</div>
+                  </div>
+                  <div className="summary-item">
+                    <div className="summary-key"><Hash size={12} /> Slug</div>
+                    <div className="summary-val mono">{slug || '—'}</div>
+                  </div>
+                  <div className="summary-item">
+                    <div className="summary-key"><SearchCheck size={12} /> Meta title</div>
+                    <div className={`summary-val${seoTitle ? '' : ' empty'}`}>{seoTitle || 'Not set'}</div>
+                  </div>
+                  <div className="summary-item wide">
+                    <div className="summary-key"><Quote size={12} /> Meta description</div>
+                    <div className={`summary-val${metaDesc ? '' : ' empty'}`}>{metaDesc || 'Not set'}</div>
+                  </div>
+                  <div className="summary-item">
+                    <div className="summary-key"><Feather size={12} /> Length</div>
+                    <div className="summary-val">{wordCount.toLocaleString()} words · ~{Math.max(1, Math.round(wordCount / 230))} min read</div>
+                  </div>
+                  <div className="summary-item">
+                    <div className="summary-key"><Images size={12} /> Images</div>
+                    <div className="summary-val">{imageCount}</div>
+                  </div>
                 </div>
               </div>
             )}
 
-            {apiToken && collectionId && !fieldMap.body && (
-              <div style={{ ...s.card, borderColor: '#f59e0b40', background: 'rgba(245,158,11,0.05)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#f59e0b', fontSize: 14 }}>
-                  <AlertTriangle size={18} />
-                  <span>
-                    <strong>Post Body field slug is empty.</strong> Open Settings and enter your CMS field slugs.
-                  </span>
-                </div>
+            {!connected && (
+              <div className="notice warn">
+                <KeyRound size={16} />
+                <span>
+                  <strong>Webflow isn’t connected yet.</strong> Add your API token and collection ID in{' '}
+                  <button className="link-btn" onClick={() => setShowSettings(true)}>Settings</button>.
+                </span>
+              </div>
+            )}
+            {connected && !fieldMap.body && (
+              <div className="notice warn">
+                <TriangleAlert size={16} />
+                <span><strong>Post body field slug is empty.</strong> Set your CMS field slugs in{' '}
+                  <button className="link-btn" onClick={() => setShowSettings(true)}>Settings</button>.</span>
+              </div>
+            )}
+            {connected && !siteId && imageCount > 0 && (
+              <div className="notice warn">
+                <CloudUpload size={16} />
+                <span><strong>Site ID missing.</strong> It’s needed to upload images to the Webflow CDN —{' '}
+                  <button className="link-btn" onClick={() => setShowSettings(true)}>add it in Settings</button>.</span>
               </div>
             )}
 
-            {!publishResult && (
-              <div style={{ textAlign: 'center', marginTop: 8 }}>
-                <button
-                  style={s.btn(true, !apiToken || !collectionId || publishing)}
-                  disabled={!apiToken || !collectionId || publishing}
-                  onClick={handlePublish}
-                >
-                  <Rocket size={16} /> {publishing ? 'Publishing...' : 'Push as Draft'}
+            {(phase === 'idle' || phase === 'error') && !publishResult?.ok && (
+              <div className="launch">
+                <button className="btn btn-gold btn-lg" disabled={!connected} onClick={() => handlePublish()}>
+                  <Rocket size={18} /> {phase === 'error' ? 'Try again' : 'Push as draft'}
                 </button>
-                {publishing && uploadProgress && (
-                  <div style={{ fontSize: 12, color: TEXT_DIM, marginTop: 8 }}>
-                    <Upload size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
-                    {uploadProgress}
+                <span className="faint">Creates a draft item — nothing goes live until you publish it in Webflow.</span>
+              </div>
+            )}
+
+            {(busy || phase === 'blocked' || (uploads.length > 0 && phase !== 'done' && phase !== 'idle')) && (
+              <div className="card">
+                <div className="card-head">
+                  <div className="card-title">
+                    {busy ? <LoaderCircle size={17} className="spin" /> : phase === 'blocked' ? <CircleAlert size={17} /> : <CloudUpload size={17} />}
+                    {phase === 'uploading' && `Uploading images · ${doneUploads}/${uploads.length}`}
+                    {phase === 'publishing' && 'Creating your draft in Webflow…'}
+                    {phase === 'blocked' && `${failedUploads} image${failedUploads === 1 ? '' : 's'} couldn’t be uploaded`}
+                    {phase === 'error' && 'Images uploaded'}
+                  </div>
+                </div>
+                {uploads.length > 0 && (
+                  <div className="progress">
+                    <span style={{ width: `${((doneUploads + failedUploads) / uploads.length) * 100}%` }} />
                   </div>
                 )}
-                {!siteId && images.length > 0 && !publishing && (
-                  <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 8 }}>
-                    <AlertTriangle size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
-                    Add Site ID in Settings to upload images to Webflow CDN
+                {phase === 'blocked' && (
+                  <p className="muted mt-12">
+                    Nothing was published. Retry the failed images, or publish without them — they’ll be left out
+                    entirely rather than showing up as text.
+                  </p>
+                )}
+                <div className="uploads">
+                  {uploads.map((u) => (
+                    <div key={u.id} className={`upload-row ${u.status}`}>
+                      <img className="upload-thumb" src={u.thumb} alt="" />
+                      <div className="grow">
+                        <div className="upload-name" title={u.name}>{u.name}</div>
+                        <div className="upload-msg">{u.message}</div>
+                      </div>
+                      <div className="upload-state">
+                        {u.status === 'working' && <LoaderCircle size={16} className="spin" />}
+                        {u.status === 'done' && <CircleCheck size={16} />}
+                        {u.status === 'error' && <CircleAlert size={16} />}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {phase === 'blocked' && (
+                  <div className="row mt-16" style={{ justifyContent: 'flex-end' }}>
+                    <button className="btn" onClick={() => handlePublish({ skipFailed: true })}>
+                      Publish without them
+                    </button>
+                    <button className="btn btn-gold" onClick={() => handlePublish()}>
+                      <RotateCcw size={15} /> Retry failed
+                    </button>
                   </div>
                 )}
               </div>
             )}
 
-            {publishResult && publishResult.ok && (
-              <div style={s.successBox}>
-                <CheckCircle2 size={40} color="#22c55e" />
-                <div style={{ fontSize: 18, fontWeight: 700, marginTop: 12, color: '#22c55e' }}>Published Successfully!</div>
-                <div style={{ fontSize: 13, color: TEXT_DIM, marginTop: 8, fontFamily: FONT_MONO }}>
-                  Item ID: {publishResult.id}
-                </div>
+            {publishResult?.ok && (
+              <div className="result ok">
+                <div className="result-icon"><Check size={34} strokeWidth={2.2} /></div>
+                <div className="result-title">Shipped.</div>
+                <p className="muted mt-8">
+                  “{metaTitle}” is waiting as a draft in your Webflow collection
+                  {publishResult.images ? ` with ${publishResult.images} image${publishResult.images === 1 ? '' : 's'} on the CDN` : ''}.
+                </p>
+                {publishResult.id && (
+                  <div className="row mt-16" style={{ justifyContent: 'center' }}>
+                    <span className="chip">Item ID · {publishResult.id}</span>
+                    <button
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(publishResult.id);
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 1500);
+                      }}
+                    >
+                      {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                )}
+                <button className="btn btn-gold mt-16" onClick={startOver} style={{ marginTop: 24 }}>
+                  <Plus size={16} /> Ship another post
+                </button>
               </div>
             )}
 
             {publishResult && !publishResult.ok && (
-              <div style={s.errorBox}>
-                <AlertTriangle size={40} color="#ef4444" />
-                <div style={{ fontSize: 18, fontWeight: 700, marginTop: 12, color: '#ef4444' }}>Publish Failed</div>
-                <pre style={{ fontSize: 12, color: TEXT_DIM, marginTop: 8, fontFamily: FONT_MONO, whiteSpace: 'pre-wrap', wordBreak: 'break-word', textAlign: 'left', maxHeight: 200, overflow: 'auto' }}>
-                  {publishResult.error}
-                </pre>
+              <div className="result err">
+                <div className="result-icon"><TriangleAlert size={32} /></div>
+                <div className="result-title">Webflow said no.</div>
+                <p className="muted mt-8">Your images are safe on the CDN — fix the issue below and try again.</p>
+                <pre>{publishResult.error}</pre>
               </div>
             )}
           </>
@@ -1689,135 +998,110 @@ export default function App() {
       </main>
 
       {/* ── Bottom Nav ── */}
-      <div style={s.navBar}>
-        <button
-          style={s.btn(false, step === 0)}
-          disabled={step === 0}
-          onClick={() => setStep((p) => p - 1)}
-        >
-          <ChevronLeft size={16} /> Back
+      <div className="navbar">
+        <button className="btn btn-ghost" disabled={step === 0 || busy} onClick={() => goTo(step - 1)}>
+          <ArrowLeft size={16} /> Back
         </button>
-        {step < 5 ? (
-          <button
-            style={s.btn(true, !canNext)}
-            disabled={!canNext}
-            onClick={() => setStep((p) => p + 1)}
-          >
-            Next <ChevronRight size={16} />
+        <div className="nav-progress">
+          <div className="nav-dots">
+            {STEPS.map((st, i) => <span key={st.label} className={i === step ? 'active' : i < step ? 'done' : ''} />)}
+          </div>
+          <span className="nav-text">{step + 1} of {STEPS.length}</span>
+        </div>
+        {step < STEPS.length - 1 ? (
+          <button className="btn btn-gold" disabled={!canNext} onClick={() => goTo(step + 1)}>
+            {step === STEPS.length - 2 ? 'Review & ship' : 'Continue'} <ArrowRight size={16} />
           </button>
         ) : (
-          <div />
+          <span style={{ width: 90 }} />
         )}
       </div>
 
       {/* ── Settings Modal ── */}
       {showSettings && (
-        <div style={s.modal} onClick={() => setShowSettings(false)}>
-          <div style={s.modalContent} onClick={(e) => e.stopPropagation()}>
-            <button style={s.closeBtn} onClick={() => setShowSettings(false)}>
-              <X size={20} />
+        <div className="modal" onMouseDown={() => setShowSettings(false)}>
+          <div className="modal-card" onMouseDown={(e) => e.stopPropagation()}>
+            <button className="btn btn-ghost btn-sm modal-close" onClick={() => setShowSettings(false)} aria-label="Close">
+              <X size={18} />
             </button>
-            <h2 style={{ fontSize: 18, fontWeight: 700, marginTop: 0, marginBottom: 24 }}>
-              <Settings size={18} style={{ verticalAlign: -3, marginRight: 8 }} />
-              Settings
-            </h2>
+            <h2 className="modal-title"><SlidersHorizontal size={22} /> Settings</h2>
+            <p className="muted">Stored only in this browser.</p>
 
-            <div style={{ marginBottom: 20 }}>
-              <label style={s.label}>Webflow API Token</label>
-              <input
-                type="password"
-                style={s.input}
-                value={apiToken}
-                onChange={(e) => setApiToken(e.target.value)}
-                placeholder="Enter your Webflow API token"
-                onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                onBlur={(e) => { e.target.style.borderColor = BORDER; }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 20 }}>
-              <label style={s.label}>Blog Collection ID</label>
-              <input
-                type="text"
-                style={{ ...s.input, fontFamily: FONT_MONO }}
-                value={collectionId}
-                onChange={(e) => setCollectionId(e.target.value)}
-                placeholder="e.g. 6123abc..."
-                onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                onBlur={(e) => { e.target.style.borderColor = BORDER; }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 20 }}>
-              <label style={s.label}>Site ID <span style={{ fontWeight: 400, color: TEXT_DIM }}>(for image uploads)</span></label>
-              <input
-                type="text"
-                style={{ ...s.input, fontFamily: FONT_MONO }}
-                value={siteId}
-                onChange={(e) => setSiteId(e.target.value)}
-                placeholder="e.g. 6123abc..."
-                onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                onBlur={(e) => { e.target.style.borderColor = BORDER; }}
-              />
-              <p style={{ fontSize: 11, color: TEXT_DIM, marginTop: 4 }}>
-                Required to upload images to Webflow CDN. Find it in Site Settings &rarr; General &rarr; Site ID.
-              </p>
-            </div>
-
-            <div style={{ marginBottom: 20 }}>
-              <label style={{ ...s.label, marginBottom: 12 }}>CMS Field Slugs</label>
-              <p style={{ fontSize: 12, color: TEXT_DIM, marginBottom: 12 }}>
-                Enter the exact field slugs from your Webflow CMS collection. Find them in Webflow &rarr; CMS &rarr; Collection Settings &rarr; each field's slug.
-              </p>
-              {[
-                { key: 'body', label: 'Post Body (Rich Text)', placeholder: 'post-body' },
-                { key: 'metaTitle', label: 'Meta Title', placeholder: 'meta-title' },
-                { key: 'metaDesc', label: 'Meta Description', placeholder: 'meta-description' },
-                { key: 'excerpt', label: 'Post Summary / Excerpt', placeholder: 'excerpt' },
-              ].map(({ key, label, placeholder }) => (
-                <div key={key} style={{ marginBottom: 10 }}>
-                  <label style={{ fontSize: 12, color: TEXT_DIM, display: 'block', marginBottom: 4 }}>{label}</label>
+            <div className="modal-section">
+              <div className="modal-section-title"><KeyRound size={15} /> Webflow connection</div>
+              <div className="field mt-12">
+                <label className="label">API token</label>
+                <div className="input-wrap">
+                  <KeyRound size={15} />
                   <input
-                    type="text"
-                    style={{ ...s.input, fontFamily: FONT_MONO }}
-                    value={fieldMap[key] || ''}
-                    onChange={(e) => setFieldMap((prev) => ({ ...prev, [key]: e.target.value }))}
-                    placeholder={placeholder}
-                    onFocus={(e) => { e.target.style.borderColor = ACCENT; }}
-                    onBlur={(e) => { e.target.style.borderColor = BORDER; }}
+                    type={showToken ? 'text' : 'password'}
+                    className="input mono"
+                    value={apiToken}
+                    onChange={(e) => setApiToken(e.target.value)}
+                    placeholder="Site API token with CMS + Assets write access"
                   />
+                  <button className="input-action" onClick={() => setShowToken((v) => !v)} title={showToken ? 'Hide' : 'Show'}>
+                    {showToken ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
                 </div>
-              ))}
+              </div>
+              <div className="field">
+                <label className="label">Blog collection ID</label>
+                <div className="input-wrap">
+                  <Database size={15} />
+                  <input className="input mono" value={collectionId} onChange={(e) => setCollectionId(e.target.value)} placeholder="e.g. 6123abc…" />
+                </div>
+              </div>
+              <div className="field">
+                <label className="label"><span>Site ID</span><span className="count">for image uploads</span></label>
+                <div className="input-wrap">
+                  <Globe size={15} />
+                  <input className="input mono" value={siteId} onChange={(e) => setSiteId(e.target.value)} placeholder="e.g. 6123abc…" />
+                </div>
+                <p className="faint mt-8">Webflow → Site settings → General → Site ID. The token needs <code>assets:write</code>.</p>
+              </div>
+            </div>
 
-              {/* Optional: auto-fill from Webflow API */}
-              <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
-                <button
-                  style={s.btn(false, fieldsLoading || !apiToken || !collectionId)}
-                  disabled={fieldsLoading || !apiToken || !collectionId}
-                  onClick={fetchCollectionFields}
-                >
-                  <RefreshCw size={14} style={fieldsLoading ? { animation: 'spin 1s linear infinite' } : {}} />
-                  {fieldsLoading ? 'Loading...' : 'Auto-detect Fields'}
+            <div className="modal-section">
+              <div className="modal-section-title"><Tag size={15} /> CMS field slugs</div>
+              <p className="faint">The exact slugs from your collection’s field settings.</p>
+              <div className="field-grid">
+                {FIELD_DEFS.map(({ key, label, placeholder }) => (
+                  <div key={key}>
+                    <label className="label">{label}</label>
+                    <input
+                      className="input mono"
+                      value={fieldMap[key] || ''}
+                      onChange={(e) => setFieldMap((prev) => ({ ...prev, [key]: e.target.value }))}
+                      placeholder={placeholder}
+                      list="shipit-field-slugs"
+                    />
+                  </div>
+                ))}
+              </div>
+              <datalist id="shipit-field-slugs">
+                {collectionFields.map((f) => <option key={f.id || f.slug} value={f.slug}>{f.displayName}</option>)}
+              </datalist>
+              <div className="row mt-12">
+                <button className="btn btn-sm" disabled={fieldsLoading || !connected} onClick={fetchCollectionFields}>
+                  {fieldsLoading ? <LoaderCircle size={14} className="spin" /> : <WandSparkles size={14} />}
+                  {fieldsLoading ? 'Detecting…' : 'Auto-detect fields'}
                 </button>
                 {collectionFields.length > 0 && (
-                  <span style={{ fontSize: 12, color: '#22c55e' }}>
-                    Found: {collectionFields.map((f) => f.slug).join(', ')}
-                  </span>
+                  <span className="chip ok"><CircleCheck size={12} /> {collectionFields.length} fields found — pick from the suggestions</span>
                 )}
               </div>
-              {fieldsError && (
-                <div style={{ marginTop: 6, color: '#ef4444', fontSize: 12 }}>{fieldsError}</div>
-              )}
+              {fieldsError && <div className="notice err mt-12" style={{ marginBottom: 0 }}><CircleAlert size={15} /> {fieldsError}</div>}
             </div>
 
-            <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end' }}>
-              <button style={s.btn(true, false)} onClick={() => setShowSettings(false)}>
-                Save & Close
+            <div className="row" style={{ justifyContent: 'flex-end', marginTop: 26 }}>
+              <button className="btn btn-gold" onClick={() => setShowSettings(false)}>
+                <Check size={16} /> Done
               </button>
             </div>
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
